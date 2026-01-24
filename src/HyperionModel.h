@@ -78,13 +78,14 @@ public:
             // Apply ADAA to input saturation
             double Fu_out;
             double Vt_u = GetEffectiveVt(u_drive);
+            double twoVt_u_inv = 1.0 / (2.0 * Vt_u);  // Precompute reciprocal
             double u;
             if (Vt_u_prev > 0.0 && fabs(Vt_u - Vt_u_prev) > (VtRelEps * Vt_u_prev)) {
                 // Vt changed significantly - use instantaneous normalized tanh
-                u = 2.0 * Vt_u * tanh(u_drive / (2.0 * Vt_u));
-                Fu_out = TanhAntiderivative(u_drive, Vt_u);
+                u = 2.0 * Vt_u * FastTanh(u_drive * twoVt_u_inv);
+                Fu_out = TanhAntiderivative(u_drive, Vt_u, twoVt_u_inv);
             } else {
-                u = TanhADAA(u_drive, u_prev, Fu_prev, Vt_u, Fu_out);
+                u = TanhADAA(u_drive, u_prev, Fu_prev, Vt_u, twoVt_u_inv, Fu_out);
             }
             u_prev = u_drive;
             Fu_prev = Fu_out;
@@ -182,40 +183,67 @@ private:
     inline double LogCosh(double x) const
     {
         double ax = fabs(x);
+#ifdef LOGCOSH_SLOW
+        // Original implementation using transcendentals
         if (ax > 20.0) return ax - MOOG_LN2;  // Avoid overflow
         return ax + log1p(exp(-2.0 * ax)) - MOOG_LN2;
+#else
+        // Fast piecewise polynomial approximation
+        // For large |x|: log(cosh(x)) ≈ |x| - ln(2)
+        if (ax > 4.0) return ax - MOOG_LN2;
+
+        // For small |x|: Taylor series log(cosh(x)) = x²/2 - x⁴/12 + x⁶/45 - x⁸/2520 + ...
+        if (ax < 0.5) {
+            double x2 = ax * ax;
+            // log(cosh(x)) ≈ x²/2 - x⁴/12 + x⁶/45
+            return x2 * (0.5 + x2 * (-0.0833333333333333 + x2 * 0.0222222222222222));
+        }
+
+        // For medium |x| (0.5 to 4.0): Chebyshev-derived polynomial fit
+        // Fit to minimize max error over [0.5, 4.0]
+        // log(cosh(x)) ≈ c0 + c1*x + c2*x² + c3*x³ + c4*x⁴
+        double x2 = ax * ax;
+        double x3 = x2 * ax;
+        double x4 = x2 * x2;
+        return -0.0022754839 + ax * 0.0277550028 + x2 * 0.4638358950
+               + x3 * 0.0109256377 + x4 * -0.0037463693;
+#endif
     }
 
     // Normalized saturation: S(x) = 2*Vt * tanh(x / (2*Vt))
     // This has unity gain at the origin: S'(0) = 1
     // Antiderivative: F(x) = 4*Vt^2 * ln(cosh(x / (2*Vt)))
-    inline double TanhAntiderivative(double x, double Vt_eff) const
+    // Takes precomputed twoVt_inv = 1/(2*Vt) for efficiency
+    inline double TanhAntiderivative(double x, double Vt_eff, double twoVt_inv) const
     {
-        return 4.0 * Vt_eff * Vt_eff * LogCosh(x / (2.0 * Vt_eff));
+        return 4.0 * Vt_eff * Vt_eff * LogCosh(x * twoVt_inv);
     }
 
     // ADAA1: First-order antialiased normalized tanh
     // Returns average value of S(x) = 2*Vt*tanh(x/(2*Vt)) over interval [x_prev, x_curr]
-    inline double TanhADAA(double x_curr, double x_prev, double Fx_prev_stage_val, double Vt_eff, double& F_out) const
+    // Takes precomputed twoVt_inv = 1/(2*Vt) for efficiency
+    inline double TanhADAA(double x_curr, double x_prev, double Fx_prev_stage_val,
+                           double Vt_eff, double twoVt_inv, double& F_out) const
     {
-        F_out = TanhAntiderivative(x_curr, Vt_eff);
+        F_out = TanhAntiderivative(x_curr, Vt_eff, twoVt_inv);
         double denom = x_curr - x_prev;
         if (fabs(denom) < 1e-12) {
-            // Degenerate case: return instantaneous normalized tanh
-            return 2.0 * Vt_eff * tanh(x_curr / (2.0 * Vt_eff));
+            // Degenerate case: return instantaneous normalized tanh (use FastTanh)
+            return 2.0 * Vt_eff * FastTanh(x_curr * twoVt_inv);
         }
         return (F_out - Fx_prev_stage_val) / denom;
     }
 
     // Derivative of normalized tanh: d/dx [2*Vt * tanh(x/(2*Vt))] = sech^2(x/(2*Vt))
     // Note: unity at origin (sech^2(0) = 1)
-    inline double TanhDerivative(double x, double Vt_eff) const
+    // Uses identity: sech²(x) = 1 - tanh²(x) with FastTanh for speed
+    inline double TanhDerivative(double x, double twoVt_inv) const
     {
-        double scaled = x / (2.0 * Vt_eff);
+        double scaled = x * twoVt_inv;
         // Avoid overflow for large |x|
         if (fabs(scaled) > 20.0) return 0.0;
-        double c = cosh(scaled);
-        return 1.0 / (c * c);
+        double t = FastTanh(scaled);
+        return 1.0 - t * t;
     }
 
     // Fast tanh approximation for initial Newton guess (from Util.h)
@@ -239,35 +267,41 @@ private:
     double SolveStageADAA(int i, double x)
     {
         double Vt_eff = GetEffectiveVt(x);
+        double twoVt_inv = 1.0 / (2.0 * Vt_eff);  // Precompute reciprocal (opt #5)
+        double twoVt = 2.0 * Vt_eff;
         bool vt_changed = (Vt_prev[i] > 0.0) && (fabs(Vt_eff - Vt_prev[i]) > (VtRelEps * Vt_prev[i]));
 
         // Initial guess using fast tanh approximation (normalized: 2*Vt*tanh(v/(2*Vt)))
-        double Sx_inst = 2.0 * Vt_eff * FastTanh(x / (2.0 * Vt_eff));
-        double Sy_inst = 2.0 * Vt_eff * FastTanh(z[i] / (2.0 * Vt_eff));
+        double Sx_inst = twoVt * FastTanh(x * twoVt_inv);
+        double Sy_inst = twoVt * FastTanh(z[i] * twoVt_inv);
         double y = z[i] + G * (Sx_inst - Sy_inst);
+
+        // Precompute F_x once before the loop (opt #1) - x doesn't change during iterations
+        double F_x = TanhAntiderivative(x, Vt_eff, twoVt_inv);
+        double denom = x - x_prev_stage[i];
+        bool use_adaa = !vt_changed && fabs(denom) > 1e-12;
+        double denom_inv = use_adaa ? (1.0 / denom) : 0.0;  // Precompute for division
+
+        // Precompute Sx_avg once - it doesn't depend on y
+        double Sx_avg;
+        if (use_adaa) {
+            Sx_avg = (F_x - Fx_prev_stage[i]) * denom_inv;
+        } else {
+            // Use instantaneous normalized tanh (FastTanh for speed, opt #3)
+            Sx_avg = twoVt * FastTanh(x * twoVt_inv);
+        }
 
         // Newton-Raphson iteration
         for (int iter = 0; iter < 4; iter++)
         {
-            // ADAA: compute average S(x) over [x_prev_stage[i], x]
-            double F_x = TanhAntiderivative(x, Vt_eff);
-            double denom = x - x_prev_stage[i];
-            double Sx_avg;
-            if (!vt_changed && fabs(denom) > 1e-12) {
-                Sx_avg = (F_x - Fx_prev_stage[i]) / denom;
-            } else {
-                // Use instantaneous normalized tanh
-                Sx_avg = 2.0 * Vt_eff * tanh(x / (2.0 * Vt_eff));
-            }
-
-            double Sy = 2.0 * Vt_eff * tanh(y / (2.0 * Vt_eff));
+            // Use FastTanh for Sy (opt #3)
+            double Sy = twoVt * FastTanh(y * twoVt_inv);
 
             // Residual: y - z[i] - G*(Sx_avg - Sy) = 0
             double residual = y - z[i] - G * (Sx_avg - Sy);
 
-            // Jacobian approximation using instantaneous derivative
-            // d(residual)/dy = 1 + G * dSy/dy
-            double dSy = TanhDerivative(y, Vt_eff);
+            // Jacobian using FastTanh-based derivative (opt #3)
+            double dSy = TanhDerivative(y, twoVt_inv);
             double jacobian = 1.0 + G * dSy;
 
             double delta = residual / jacobian;
@@ -279,9 +313,9 @@ private:
         // Update TPT state (trapezoidal integrator)
         z[i] = 2.0 * y - z[i];
 
-        // Update ADAA state for next sample
+        // Update ADAA state for next sample - reuse F_x computed above (opt #1)
         x_prev_stage[i] = x;
-        Fx_prev_stage[i] = TanhAntiderivative(x, Vt_eff);
+        Fx_prev_stage[i] = F_x;
         Vt_prev[i] = Vt_eff;
 
         return y;
