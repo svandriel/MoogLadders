@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
-project(MoogLadderExample VERSION 1.0 LANGUAGES CXX)
+project(MoogLadders VERSION 1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Main example with audio playback
 add_executable(MoogLadderExample
     example/main.cpp
     src/AudioDevice.cpp
@@ -13,9 +14,20 @@ add_executable(MoogLadderExample
 target_include_directories(MoogLadderExample PRIVATE
     src
     third_party
+    example
 )
 
-# Platform-specific RtAudio configuration
+# Run all filters tool (no audio device dependency)
+add_executable(RunFilters
+    example/run-filters.cpp
+)
+
+target_include_directories(RunFilters PRIVATE
+    src
+    example
+)
+
+# Platform-specific RtAudio configuration for MoogLadderExample
 if(WIN32)
     target_compile_definitions(MoogLadderExample PRIVATE __WINDOWS_DS__)
     target_link_libraries(MoogLadderExample PRIVATE dsound ole32 winmm)

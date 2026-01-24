@@ -10,6 +10,7 @@
 
 #include "LadderFilterBase.h"
 #include "Util.h"
+#include <cstring>
 
 class MusicDSPMoog : public LadderFilterBase
 {
