@@ -12,6 +12,7 @@
 #define SIMPLIFIED_LADDER_H
 
 #include "LadderFilterBase.h"
+#include <algorithm>
 
 /*
 The simplified nonlinear Moog filter is based on the full Huovilainen model,
@@ -40,9 +41,9 @@ public:
 		// (compared to a 12 dB decrease in the original Moog model
 		gainCompensation = 0.5;
 		
-		memset(stage, 0, sizeof(stage));
-		memset(stageZ1, 0, sizeof(stageZ1));
-		memset(stageTanh, 0, sizeof(stageTanh));
+		std::fill(std::begin(stage), std::end(stage), 0.0);
+		std::fill(std::begin(stageZ1), std::end(stageZ1), 0.0);
+		std::fill(std::begin(stageTanh), std::end(stageTanh), 0.0);
 		
 		SetCutoff(1000.0f);
 		SetResonance(0.10f);

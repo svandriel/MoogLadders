@@ -7,6 +7,7 @@
 #define HUOVILAINEN_LADDER_H
 
 #include "LadderFilterBase.h"
+#include <algorithm>
 
 /*
 Huovilainen developed an improved and physically correct model of the Moog
@@ -36,9 +37,9 @@ public:
 	
 	HuovilainenMoog(float sampleRate) : LadderFilterBase(sampleRate), thermal(0.000025)
 	{
-		memset(stage, 0, sizeof(stage));
-		memset(delay, 0, sizeof(delay));
-		memset(stageTanh, 0, sizeof(stageTanh));
+		std::fill(std::begin(stage), std::end(stage), 0.0);
+		std::fill(std::begin(delay), std::end(delay), 0.0);
+		std::fill(std::begin(stageTanh), std::end(stageTanh), 0.0);
 		SetCutoff(1000.0f);
 		SetResonance(0.10f);
 	}

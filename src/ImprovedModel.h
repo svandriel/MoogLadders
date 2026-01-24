@@ -20,6 +20,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #define IMPROVED_LADDER_H
 
 #include "LadderFilterBase.h"
+#include <algorithm>
 
 /*
 This model is based on a reference implementation of an algorithm developed by
@@ -41,9 +42,9 @@ public:
 	
 	ImprovedMoog(float sampleRate) : LadderFilterBase(sampleRate)
 	{
-		memset(V, 0, sizeof(V));
-		memset(dV, 0, sizeof(dV));
-		memset(tV, 0, sizeof(tV));
+		std::fill(std::begin(V), std::end(V), 0.0);
+		std::fill(std::begin(dV), std::end(dV), 0.0);
+		std::fill(std::begin(tV), std::end(tV), 0.0);
 		
 		drive = 1.0f;
 		

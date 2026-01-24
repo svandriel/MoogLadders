@@ -30,6 +30,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "LadderFilterBase.h"
 #include "Util.h"
+#include <algorithm>
 
 /*
 Imitates a Moog resonant filter by Runge-Kutte numerical integration of
@@ -69,7 +70,7 @@ public:
 	
 	RKSimulationMoog(float sampleRate) : LadderFilterBase(sampleRate)
 	{
-		memset(state, 0, sizeof(state));
+		std::fill(std::begin(state), std::end(state), 0.0);
 		
 		saturation = 3.0;
 		saturationInv = 1.0 / saturation;

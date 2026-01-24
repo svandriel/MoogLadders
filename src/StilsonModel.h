@@ -11,6 +11,7 @@
 #define STILSON_LADDER_H
 
 #include "LadderFilterBase.h"
+#include <algorithm>
 
 /*
 A digital model of the classic Moog filter was presented first by Stilson and
@@ -59,7 +60,7 @@ public:
 	
 	StilsonMoog(float sampleRate) : LadderFilterBase(sampleRate)
 	{
-		memset(state, 0, sizeof(state));
+		std::fill(std::begin(state), std::end(state), 0.0);
 		SetCutoff(1000.0f);
 		SetResonance(0.10f);
 	}

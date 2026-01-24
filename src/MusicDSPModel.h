@@ -10,7 +10,7 @@
 
 #include "LadderFilterBase.h"
 #include "Util.h"
-#include <cstring>
+#include <algorithm>
 
 class MusicDSPMoog : public LadderFilterBase
 {
@@ -19,8 +19,8 @@ public:
 	
 	MusicDSPMoog(float sampleRate) : LadderFilterBase(sampleRate)
 	{
-		memset(stage, 0, sizeof(stage));
-		memset(delay, 0, sizeof(delay));
+		std::fill(std::begin(stage), std::end(stage), 0.0);
+		std::fill(std::begin(delay), std::end(delay), 0.0);
 		SetCutoff(1000.0f);
 		SetResonance(0.10f);
 	}

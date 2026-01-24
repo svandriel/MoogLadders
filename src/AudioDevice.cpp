@@ -17,7 +17,7 @@ static int rt_callback(void * output_buffer, void * input_buffer, unsigned int n
 	} 
 	else
 	{
-		memset(output_buffer, 0, BUFFER_LENGTH * sizeof(float));
+		std::fill_n(static_cast<float*>(output_buffer), BUFFER_LENGTH, 0.0f);
 	}
 
 	return 0;

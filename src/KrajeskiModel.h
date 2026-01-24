@@ -5,6 +5,7 @@
 
 #include "LadderFilterBase.h"
 #include "Util.h"
+#include <algorithm>
 
 /*
 This class implements Tim Stilson's MoogVCF filter
@@ -31,8 +32,8 @@ public:
 	
     KrajeskiMoog(float sampleRate) : LadderFilterBase(sampleRate)
 	{
-		memset(state, 0, sizeof(state));
-		memset(delay, 0, sizeof(delay));
+		std::fill(std::begin(state), std::end(state), 0.0);
+		std::fill(std::begin(delay), std::end(delay), 0.0);
 		
 		drive = 1.0;
 		gComp = 1.0;

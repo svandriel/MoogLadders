@@ -21,7 +21,7 @@ This implementation is self-contained with all ADAA functions inline.
 #include "LadderFilterBase.h"
 #include "Util.h"
 #include <cmath>
-#include <cstring>
+#include <algorithm>
 
 class HyperionMoog : public LadderFilterBase
 {
@@ -31,10 +31,10 @@ public:
     HyperionMoog(float sampleRate) : LadderFilterBase(sampleRate)
     {
         // Initialize state
-        memset(z, 0, sizeof(z));
-        memset(x_prev_stage, 0, sizeof(x_prev_stage));
-        memset(Fx_prev_stage, 0, sizeof(Fx_prev_stage));
-        memset(Vt_prev, 0, sizeof(Vt_prev));
+        std::fill(std::begin(z), std::end(z), 0.0);
+        std::fill(std::begin(x_prev_stage), std::end(x_prev_stage), 0.0);
+        std::fill(std::begin(Fx_prev_stage), std::end(Fx_prev_stage), 0.0);
+        std::fill(std::begin(Vt_prev), std::end(Vt_prev), 0.0);
         u_prev = 0.0;
         Fu_prev = 0.0;
         Vt_u_prev = 0.0;
@@ -49,7 +49,7 @@ public:
         G = 0.0;
         gamma = 0.0;
         alpha0 = 1.0;
-        memset(beta, 0, sizeof(beta));
+        std::fill(std::begin(beta), std::end(beta), 0.0);
 
         // Default to LP4 mode
         SetFilterMode(LP4);
@@ -165,7 +165,7 @@ public:
         adaptiveVtEnabled = enable;
         VtAlpha = alpha;
         Vt_u_prev = 0.0;
-        memset(Vt_prev, 0, sizeof(Vt_prev));
+        std::fill(std::begin(Vt_prev), std::end(Vt_prev), 0.0);
     }
 
     // Energy monitoring (for validation/debugging)
