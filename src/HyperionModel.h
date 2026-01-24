@@ -32,8 +32,8 @@ public:
     {
         // Initialize state
         memset(z, 0, sizeof(z));
-        memset(v_prev, 0, sizeof(v_prev));
-        memset(F_prev, 0, sizeof(F_prev));
+        memset(x_prev_stage, 0, sizeof(x_prev_stage));
+        memset(Fx_prev_stage, 0, sizeof(Fx_prev_stage));
         memset(Vt_prev, 0, sizeof(Vt_prev));
         u_prev = 0.0;
         Fu_prev = 0.0;
@@ -196,7 +196,7 @@ private:
 
     // ADAA1: First-order antialiased normalized tanh
     // Returns average value of S(x) = 2*Vt*tanh(x/(2*Vt)) over interval [x_prev, x_curr]
-    inline double TanhADAA(double x_curr, double x_prev, double F_prev_val, double Vt_eff, double& F_out) const
+    inline double TanhADAA(double x_curr, double x_prev, double Fx_prev_stage_val, double Vt_eff, double& F_out) const
     {
         F_out = TanhAntiderivative(x_curr, Vt_eff);
         double denom = x_curr - x_prev;
@@ -204,7 +204,7 @@ private:
             // Degenerate case: return instantaneous normalized tanh
             return 2.0 * Vt_eff * tanh(x_curr / (2.0 * Vt_eff));
         }
-        return (F_out - F_prev_val) / denom;
+        return (F_out - Fx_prev_stage_val) / denom;
     }
 
     // Derivative of normalized tanh: d/dx [2*Vt * tanh(x/(2*Vt))] = sech^2(x/(2*Vt))
@@ -233,40 +233,42 @@ private:
 
     // ==================== NEWTON-RAPHSON STAGE SOLVER ====================
 
-    // Solve the implicit stage equation with ADAA:
-    //   y = G * S_avg(x - y) + (1 - G) * z[i]
-    // where S_avg is the ADAA-averaged tanh
+    // Solve the implicit stage equation (TPT-consistent):
+    //   y = z[i] + G * (S_avg(x) - S(y))
+    // where S_avg(x) is the ADAA-averaged nonlinearity on the explicit input
     double SolveStageADAA(int i, double x)
     {
         double Vt_eff = GetEffectiveVt(x);
         bool vt_changed = (Vt_prev[i] > 0.0) && (fabs(Vt_eff - Vt_prev[i]) > (VtRelEps * Vt_prev[i]));
 
         // Initial guess using fast tanh approximation (normalized: 2*Vt*tanh(v/(2*Vt)))
-        double y = G * 2.0 * Vt_eff * FastTanh((x - z[i]) / (2.0 * Vt_eff)) + (1.0 - G) * z[i];
+        double Sx_inst = 2.0 * Vt_eff * FastTanh(x / (2.0 * Vt_eff));
+        double Sy_inst = 2.0 * Vt_eff * FastTanh(z[i] / (2.0 * Vt_eff));
+        double y = z[i] + G * (Sx_inst - Sy_inst);
 
         // Newton-Raphson iteration
         for (int iter = 0; iter < 4; iter++)
         {
-            double v = x - y;  // Voltage across nonlinearity
-
-            // ADAA: compute average tanh over [v_prev[i], v]
-            double F_curr = TanhAntiderivative(v, Vt_eff);
-            double denom = v - v_prev[i];
-            double S_avg;
+            // ADAA: compute average S(x) over [x_prev_stage[i], x]
+            double F_x = TanhAntiderivative(x, Vt_eff);
+            double denom = x - x_prev_stage[i];
+            double Sx_avg;
             if (!vt_changed && fabs(denom) > 1e-12) {
-                S_avg = (F_curr - F_prev[i]) / denom;
+                Sx_avg = (F_x - Fx_prev_stage[i]) / denom;
             } else {
                 // Use instantaneous normalized tanh
-                S_avg = 2.0 * Vt_eff * tanh(v / (2.0 * Vt_eff));
+                Sx_avg = 2.0 * Vt_eff * tanh(x / (2.0 * Vt_eff));
             }
 
-            // Residual: y - G*S_avg - (1-G)*z[i] = 0
-            double residual = y - G * S_avg - (1.0 - G) * z[i];
+            double Sy = 2.0 * Vt_eff * tanh(y / (2.0 * Vt_eff));
+
+            // Residual: y - z[i] - G*(Sx_avg - Sy) = 0
+            double residual = y - z[i] - G * (Sx_avg - Sy);
 
             // Jacobian approximation using instantaneous derivative
-            // d(residual)/dy = 1 + G * dS/dv * dv/dy = 1 + G * dS (since dv/dy = -1)
-            double dS = TanhDerivative(v, Vt_eff);
-            double jacobian = 1.0 + G * dS;
+            // d(residual)/dy = 1 + G * dSy/dy
+            double dSy = TanhDerivative(y, Vt_eff);
+            double jacobian = 1.0 + G * dSy;
 
             double delta = residual / jacobian;
             y -= delta;
@@ -278,9 +280,8 @@ private:
         z[i] = 2.0 * y - z[i];
 
         // Update ADAA state for next sample
-        double v_final = x - y;
-        v_prev[i] = v_final;
-        F_prev[i] = TanhAntiderivative(v_final, Vt_eff);
+        x_prev_stage[i] = x;
+        Fx_prev_stage[i] = TanhAntiderivative(x, Vt_eff);
         Vt_prev[i] = Vt_eff;
 
         return y;
@@ -299,9 +300,9 @@ private:
     double K;              // Resonance [0, 4]
     double beta[4];        // Feedback weights for TPT ladder sum
 
-    // ADAA state: previous nonlinearity input and antiderivative per stage
-    double v_prev[4];
-    double F_prev[4];
+    // ADAA state: previous stage input and antiderivative per stage
+    double x_prev_stage[4];
+    double Fx_prev_stage[4];
     double Vt_prev[4];
 
     // Input saturation ADAA state
