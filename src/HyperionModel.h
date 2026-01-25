@@ -264,7 +264,7 @@ private:
         }
 
         // Newton-Raphson iteration
-        for (int iter = 0; iter < 4; iter++)
+        for (int iter = 0; iter < nr_iters; iter++)
         {
             double Sy = twoVt * FastTanh(y * twoVt_inv);
 
@@ -322,6 +322,7 @@ private:
     double modeCoeffs[5];
 
     static constexpr double VtRelEps = 1e-6;
+    int nr_iters = 2;
 };
 
 #endif // HYPERION_LADDER_H
