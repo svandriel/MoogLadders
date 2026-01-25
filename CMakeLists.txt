@@ -27,8 +27,14 @@ target_include_directories(RunFilters PRIVATE
     example
 )
 
+# Option to use RtAudio dummy backend (for CI environments without audio hardware)
+option(RTAUDIO_DUMMY "Use RtAudio dummy backend (no audio output)" OFF)
+
 # Platform-specific RtAudio configuration for MoogLadderExample
-if(WIN32)
+if(RTAUDIO_DUMMY)
+    # Dummy backend - no platform API defined, RtAudio auto-selects dummy
+    message(STATUS "Using RtAudio dummy backend")
+elseif(WIN32)
     target_compile_definitions(MoogLadderExample PRIVATE __WINDOWS_DS__)
     target_link_libraries(MoogLadderExample PRIVATE dsound ole32 winmm)
 elseif(APPLE)
