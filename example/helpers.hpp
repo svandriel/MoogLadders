@@ -36,7 +36,7 @@ enum class FilterModel {
     Count
 };
 
-inline const char* FilterModelNames[] = {
+static const char* FilterModelNames[] = {
     "Stilson",
     "Simplified",
     "Huovilainen",
@@ -60,7 +60,7 @@ enum class OversamplePreset {
     X8_LowLatency
 };
 
-inline const char* OversamplePresetNames[] = {
+static const char* OversamplePresetNames[] = {
     "none",
     "2x",
     "4x",
