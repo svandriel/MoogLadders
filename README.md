@@ -24,6 +24,24 @@ Improved | ISC | Via Author | Yes
 RKSimulation | BSD | Bob~ by Miller Puckette | Yes
 Hyperion | Unlicense | Via Author | Yes
 
+# Analysis
+
+A variety of filter tests and analysis are implemented as a Python script. After building the RunFilters target, use like so:
+```
+python scripts/filter_verification.py --runfilters build/Release/RunFilters.exe --tests all --filters all --os 0,4 --verbose
+```
+
+An interactive html dashboard can be generated from the output of the `filter_verification.py` script and run like this (example):
+```
+python scripts/dashboard_generator.py filter_validation/2026-01-24_194311
+```
+
+The dashboard generator is imported as a module into the analysis, so you can also run both in one go: 
+```
+python scripts/filter_verification.py -r build/Release/RunFilters.exe --tests all --filters all --dashboard
+```
+
+
 # ToDo
 
 Community contributions are welcome.
