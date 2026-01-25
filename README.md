@@ -1,13 +1,11 @@
 # Moog Ladder Filters
 
-This project contains different digital implementations of the classic 4-pole, 24 dB/octave analog filter introduced in 1965. The filter is well-regarded to add a nice character to any sound source, either synthesized or acoustic. 
+This project contains different digital implementations of the classic 4-pole, 24 dB/octave analog filter introduced in 1965. The filter is well-regarded to add a nice character to any sound source, either synthesized or acoustic. The ladder structure consists of four one-pole filters and a global negative feedback loop.
 
-The ladder structure consists of four one-pole filters and a global negative feedback loop. Several academics have attempted to discretize this filter, and some academic publications on the topic can be found in the `research/` directory.
-
-The filter classes do not rely on external libraries and can be used with little to no modification in other DSP projects. Every filter has been modified from its original implementation for code clarity and/or runtime performance. The project includes a test app that will pass white noise through each of the implemented filter variants. 
+The C++11 filter classes do not rely on external libraries and can be used with little to no modification in other DSP projects; the idea of this project is that you choose which variant suits your project best and then copy the parts that you need, rather than included as a monolithic DSP library. Every filter has been modified from its original implementation for code clarity and/or runtime performance. The project includes a test app that will load a sample wav file through each of the implemented filter variants. 
 
 # Filter Tuning & A Word of Warning
-Each model is unique. The newest is from 2015 while the oldest dates back over 20 years. Some try to remain true to their analog counterpart, where others are more approximate. The filters have not been rigorously verified for all combinations of cutoff, resonance, and sampling rate. Some are purposely built to self-oscillate, but beware the occasional blow-up with parameters that exceed some undiscovered value. 
+Each model is unique. The newest is from 2025 while the oldest dates back over 20 years. Some try to remain true to their analog counterpart, where others are more approximate. The filters have not been rigorously verified for all combinations of cutoff, resonance, and sampling rate. Some are purposely built to self-oscillate, but beware the occasional blow-up with parameters that exceed some undiscovered value. 
 
 # Models & Licenses
 
@@ -24,15 +22,14 @@ MusicDSP | Suggested CC-BY-SA | MusicDSP.org | Yes
 Oberheim | Custom | Will Pirkle | Yes
 Improved | ISC | Via Author | Yes
 RKSimulation | BSD | Bob~ by Miller Puckette | Yes
+Hyperion | Unlicense | Via Author | Yes
 
 # ToDo
 
 Community contributions are welcome.
 
-* Several filters have extra parameters that could be exposed (drive, thermal coefficients, Q, etc).
-* Many filters could be easily modified for HPF or other types of output.
-* Filter response graphs.
-* The Huovilainen and Simplified models need to be oversampled and nyquist filtered.
+* Several filters have extra parameters that could be exposed (drive, thermal tuning coefficients, etc).
+* Many filters may also be easily modified for HPF or other types of output.
 
 # License
 If not otherwise stated in the header of a file, all other code in this project is released under the Unlicense.
