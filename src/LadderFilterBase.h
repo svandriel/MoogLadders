@@ -4,6 +4,7 @@
 #define LADDER_FILTER_BASE_H
 
 #include "MoogUtils.h"
+#include <iterator>
 
 class LadderFilterBase
 {
