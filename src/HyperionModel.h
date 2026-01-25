@@ -1,17 +1,9 @@
-/*
-HyperionMoog - A novel Moog ladder filter combining:
-- Zero-Delay Feedback via Topology-Preserving Transform (TPT)
-- Antiderivative Antialiasing (ADAA) for reduced aliasing without oversampling
-- Per-stage nonlinearity with adaptive thermal voltage modeling
-- Multi-mode output (LP, HP, BP, Notch)
-
-References:
-- Pirkle (2012): TPT framework for virtual analog
-- Bilbao & Välimäki (2017): Antiderivative antialiasing
-- Huovilainen (2004): Nonlinear ladder modeling
-
-This implementation is self-contained with all ADAA functions inline.
-*/
+// HyperionMoog - A new Moog ladder filter combining:
+// - Zero-Delay Feedback via Topology-Preserving Transform (TPT)
+// - Antiderivative Antialiasing (ADAA) for reduced aliasing without oversampling
+// - Per-stage nonlinearity with adaptive thermal voltage modeling
+// - Multi-mode output (LP, HP, BP, Notch)
+// - By Dimitri Diakopoulos and Claude, 2025 (Public Domain/Unlicense)
 
 #pragma once
 
@@ -26,6 +18,7 @@ This implementation is self-contained with all ADAA functions inline.
 class HyperionMoog : public LadderFilterBase
 {
 public:
+
     enum FilterMode { LP2, LP4, BP2, BP4, HP2, HP4, NOTCH };
 
     HyperionMoog(float sampleRate) : LadderFilterBase(sampleRate)
@@ -35,13 +28,14 @@ public:
         std::fill(std::begin(x_prev_stage), std::end(x_prev_stage), 0.0);
         std::fill(std::begin(Fx_prev_stage), std::end(Fx_prev_stage), 0.0);
         std::fill(std::begin(Vt_prev), std::end(Vt_prev), 0.0);
+        std::fill(std::begin(beta), std::end(beta), 0.0);
+
         u_prev = 0.0;
         Fu_prev = 0.0;
         Vt_u_prev = 0.0;
 
-        // Default parameters
-        Vt = 0.312;            // Thermal voltage scaled for numerical convenience
-        VtAlpha = 0.05;        // Adaptive coefficient
+        Vt = 0.312; // Thermal voltage scaled for numerical convenience
+        VtAlpha = 0.05; // Adaptive coefficient
         adaptiveVtEnabled = true;
         drive = 1.0;
         K = 0.0;
@@ -49,9 +43,7 @@ public:
         G = 0.0;
         gamma = 0.0;
         alpha0 = 1.0;
-        std::fill(std::begin(beta), std::end(beta), 0.0);
 
-        // Default to LP4 mode
         SetFilterMode(LP4);
         SetCutoff(1000.0f);
         SetResonance(0.1f);
@@ -61,21 +53,17 @@ public:
 
     virtual void Process(float* samples, uint32_t n) override
     {
-        for (uint32_t s = 0; s < n; ++s)
-        {
-            // 1. Compute zero-delay feedback sum (TPT ladder weights)
-            double sigma =
-                beta[0] * z[0] +
-                beta[1] * z[1] +
-                beta[2] * z[2] +
-                beta[3] * z[3];
+        for (uint32_t s = 0; s < n; ++s) {
 
-            // 2. Input stage: feedback subtraction and input saturation with ADAA
+            // zero-delay feedback sum (TPT ladder weights)
+            double sigma = beta[0] * z[0] + beta[1] * z[1] + beta[2] * z[2] + beta[3] * z[3];
+
+            // feedback subtraction and input saturation with ADAA
             double inputScaled = samples[s] * (1.0 + K);
             double u_raw = (inputScaled - K * sigma) * alpha0;
             double u_drive = u_raw * drive;
 
-            // Apply ADAA to input saturation
+            // apply ADAA to input saturation
             double Fu_out;
             double Vt_u = GetEffectiveVt(u_drive);
             double twoVt_u_inv = 1.0 / (2.0 * Vt_u);  // Precompute reciprocal
@@ -87,28 +75,22 @@ public:
             } else {
                 u = TanhADAA(u_drive, u_prev, Fu_prev, Vt_u, twoVt_u_inv, Fu_out);
             }
+
             u_prev = u_drive;
             Fu_prev = Fu_out;
             Vt_u_prev = Vt_u;
 
-            // 3. Four-stage cascade with per-stage ADAA nonlinearity
             double y[4];
             double x = u;
 
             for (int i = 0; i < 4; i++)
             {
                 y[i] = SolveStageADAA(i, x);
-                x = y[i];  // Output feeds next stage
+                x = y[i];
             }
 
-            // 4. Multi-mode output mixing
-            samples[s] = static_cast<float>(
-                modeCoeffs[0] * u +
-                modeCoeffs[1] * y[0] +
-                modeCoeffs[2] * y[1] +
-                modeCoeffs[3] * y[2] +
-                modeCoeffs[4] * y[3]
-            );
+            // output mixing
+            samples[s] = static_cast<float>(modeCoeffs[0] * u + modeCoeffs[1] * y[0] + modeCoeffs[2] * y[1] + modeCoeffs[3] * y[2] + modeCoeffs[4] * y[3]);
         }
     }
 
@@ -126,7 +108,7 @@ public:
         G = g / (1.0 + g);
         gamma = G * G * G * G;
 
-        // TPT ladder feedback weights (aligned with OberheimVariationModel)
+        // TPT ladder feedback weights
         double gInv = 1.0 / (1.0 + g);
         beta[0] = G * G * G * gInv;
         beta[1] = G * G * gInv;
@@ -140,7 +122,7 @@ public:
     virtual void SetResonance(float r) override
     {
         resonance = r;
-        K = 4.0 * r;  // Map [0,1] to [0,4]
+        K = 4.0 * r;
         alpha0 = 1.0 / (1.0 + K * gamma);
     }
 
@@ -168,7 +150,6 @@ public:
         std::fill(std::begin(Vt_prev), std::end(Vt_prev), 0.0);
     }
 
-    // Energy monitoring (for validation/debugging)
     double GetStoredEnergy() const
     {
         // Sum of squared state variables (proportional to stored energy)
@@ -176,7 +157,6 @@ public:
     }
 
 private:
-    // ==================== INLINE ADAA FUNCTIONS ====================
 
     // Numerically stable log(cosh(x))
     // For |x| > 20, log(cosh(x)) ≈ |x| - ln(2)
@@ -213,7 +193,6 @@ private:
     // Normalized saturation: S(x) = 2*Vt * tanh(x / (2*Vt))
     // This has unity gain at the origin: S'(0) = 1
     // Antiderivative: F(x) = 4*Vt^2 * ln(cosh(x / (2*Vt)))
-    // Takes precomputed twoVt_inv = 1/(2*Vt) for efficiency
     inline double TanhAntiderivative(double x, double Vt_eff, double twoVt_inv) const
     {
         return 4.0 * Vt_eff * Vt_eff * LogCosh(x * twoVt_inv);
@@ -221,9 +200,7 @@ private:
 
     // ADAA1: First-order antialiased normalized tanh
     // Returns average value of S(x) = 2*Vt*tanh(x/(2*Vt)) over interval [x_prev, x_curr]
-    // Takes precomputed twoVt_inv = 1/(2*Vt) for efficiency
-    inline double TanhADAA(double x_curr, double x_prev, double Fx_prev_stage_val,
-                           double Vt_eff, double twoVt_inv, double& F_out) const
+    inline double TanhADAA(double x_curr, double x_prev, double Fx_prev_stage_val, double Vt_eff, double twoVt_inv, double& F_out) const
     {
         F_out = TanhAntiderivative(x_curr, Vt_eff, twoVt_inv);
         double denom = x_curr - x_prev;
@@ -236,11 +213,9 @@ private:
 
     // Derivative of normalized tanh: d/dx [2*Vt * tanh(x/(2*Vt))] = sech^2(x/(2*Vt))
     // Note: unity at origin (sech^2(0) = 1)
-    // Uses identity: sech²(x) = 1 - tanh²(x) with FastTanh for speed
     inline double TanhDerivative(double x, double twoVt_inv) const
     {
         double scaled = x * twoVt_inv;
-        // Avoid overflow for large |x|
         if (fabs(scaled) > 20.0) return 0.0;
         double t = FastTanh(scaled);
         return 1.0 - t * t;
@@ -259,15 +234,13 @@ private:
         return adaptiveVtEnabled ? Vt * (1.0 + VtAlpha * fabs(x)) : Vt;
     }
 
-    // ==================== NEWTON-RAPHSON STAGE SOLVER ====================
-
     // Solve the implicit stage equation (TPT-consistent):
     //   y = z[i] + G * (S_avg(x) - S(y))
     // where S_avg(x) is the ADAA-averaged nonlinearity on the explicit input
-    double SolveStageADAA(int i, double x)
+    inline double SolveStageADAA(int i, double x)
     {
         double Vt_eff = GetEffectiveVt(x);
-        double twoVt_inv = 1.0 / (2.0 * Vt_eff);  // Precompute reciprocal (opt #5)
+        double twoVt_inv = 1.0 / (2.0 * Vt_eff); // Precompute reciprocal
         double twoVt = 2.0 * Vt_eff;
         bool vt_changed = (Vt_prev[i] > 0.0) && (fabs(Vt_eff - Vt_prev[i]) > (VtRelEps * Vt_prev[i]));
 
@@ -276,31 +249,29 @@ private:
         double Sy_inst = twoVt * FastTanh(z[i] * twoVt_inv);
         double y = z[i] + G * (Sx_inst - Sy_inst);
 
-        // Precompute F_x once before the loop (opt #1) - x doesn't change during iterations
+        // Precompute F_x
         double F_x = TanhAntiderivative(x, Vt_eff, twoVt_inv);
         double denom = x - x_prev_stage[i];
         bool use_adaa = !vt_changed && fabs(denom) > 1e-12;
         double denom_inv = use_adaa ? (1.0 / denom) : 0.0;  // Precompute for division
 
-        // Precompute Sx_avg once - it doesn't depend on y
         double Sx_avg;
         if (use_adaa) {
             Sx_avg = (F_x - Fx_prev_stage[i]) * denom_inv;
         } else {
-            // Use instantaneous normalized tanh (FastTanh for speed, opt #3)
+            // Use instantaneous normalized tanh 
             Sx_avg = twoVt * FastTanh(x * twoVt_inv);
         }
 
         // Newton-Raphson iteration
         for (int iter = 0; iter < 4; iter++)
         {
-            // Use FastTanh for Sy (opt #3)
             double Sy = twoVt * FastTanh(y * twoVt_inv);
 
             // Residual: y - z[i] - G*(Sx_avg - Sy) = 0
             double residual = y - z[i] - G * (Sx_avg - Sy);
 
-            // Jacobian using FastTanh-based derivative (opt #3)
+            // Jacobian using FastTanh-based derivative
             double dSy = TanhDerivative(y, twoVt_inv);
             double jacobian = 1.0 + G * dSy;
 
@@ -313,7 +284,7 @@ private:
         // Update TPT state (trapezoidal integrator)
         z[i] = 2.0 * y - z[i];
 
-        // Update ADAA state for next sample - reuse F_x computed above (opt #1)
+        // Update ADAA state for next sample - reuse F_x computed above
         x_prev_stage[i] = x;
         Fx_prev_stage[i] = F_x;
         Vt_prev[i] = Vt_eff;
@@ -321,18 +292,16 @@ private:
         return y;
     }
 
-    // ==================== FILTER STATE ====================
-
-    // TPT integrator states (capacitor voltages)
+    // TPT integrator states (cap voltages)
     double z[4];
 
-    // TPT coefficients
-    double G;              // g/(1+g) integrator gain
-    double g;              // Raw integrator coefficient
-    double gamma;          // G^4 for feedback
-    double alpha0;         // Feedback resolution: 1/(1 + K*gamma)
-    double K;              // Resonance [0, 4]
-    double beta[4];        // Feedback weights for TPT ladder sum
+    // TPT ceoffs
+    double G; // g/(1+g) integrator gain
+    double g; // Raw integrator coefficient
+    double gamma; // G^4 for feedback
+    double alpha0; // Feedback resolution: 1/(1 + K*gamma)
+    double K; // Resonance [0, 4]
+    double beta[4]; // Feedback weights for TPT ladder sum
 
     // ADAA state: previous stage input and antiderivative per stage
     double x_prev_stage[4];
@@ -345,14 +314,11 @@ private:
     double Vt_u_prev;
 
     // Thermal voltage modeling
-    double Vt;             // Base thermal voltage (scaled for numerical convenience)
-    double VtAlpha;        // Adaptive coefficient
+    double Vt; // Base thermal voltage (scaled for numerical convenience)
+    double VtAlpha; // Adaptive coefficient
     bool adaptiveVtEnabled;
 
-    // Drive/saturation
     double drive;
-
-    // Multi-mode output coefficients: output = c[0]*u + c[1]*y0 + c[2]*y1 + c[3]*y2 + c[4]*y3
     double modeCoeffs[5];
 
     static constexpr double VtRelEps = 1e-6;
