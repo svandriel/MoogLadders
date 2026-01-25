@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <array>
 
-#include "MoogFilters.h"
+#include "MoogUtils.h"
 
 class BiQuadBase
 {
@@ -19,10 +19,7 @@ public:
 		w = {{0.0f, 0.0f}};
 	}
 	
-	~BiQuadBase()
-	{
-
-	}
+	~BiQuadBase() = default;
 	
 	// DF-II impl
 	void Process(float * samples, const uint32_t n)
