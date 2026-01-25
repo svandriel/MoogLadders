@@ -5,7 +5,7 @@
 
 // This file implements a simple sound file player based on RtAudio for testing / example purposes.
 
-#include "Util.h"
+#include "MoogUtils.h"
 #include "RingBuffer.h"
 #include "rtaudio/RtAudio.h"
 

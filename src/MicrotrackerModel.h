@@ -7,7 +7,6 @@
 #define MICROTRACKER_MODEL_H
 
 #include "LadderFilterBase.h"
-#include "Util.h"
 
 class MicrotrackerMoog : public LadderFilterBase
 {

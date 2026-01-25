@@ -8,7 +8,7 @@
 #define OBERHEIM_VARIATION_LADDER_H
 
 #include "LadderFilterBase.h"
-#include "Util.h"
+#include "MoogUtils.h"
 
 class VAOnePole
 {

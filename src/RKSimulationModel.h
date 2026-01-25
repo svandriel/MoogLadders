@@ -29,7 +29,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define RK_SIMULATION_LADDER_H
 
 #include "LadderFilterBase.h"
-#include "Util.h"
 #include <algorithm>
 
 /*

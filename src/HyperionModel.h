@@ -11,7 +11,6 @@
 #define HYPERION_LADDER_H
 
 #include "LadderFilterBase.h"
-#include "Util.h"
 #include <cmath>
 #include <algorithm>
 
@@ -185,8 +184,7 @@ private:
         double x2 = ax * ax;
         double x3 = x2 * ax;
         double x4 = x2 * x2;
-        return -0.0022754839 + ax * 0.0277550028 + x2 * 0.4638358950
-               + x3 * 0.0109256377 + x4 * -0.0037463693;
+        return -0.0022754839 + ax * 0.0277550028 + x2 * 0.4638358950 + x3 * 0.0109256377 + x4 * -0.0037463693;
 #endif
     }
 

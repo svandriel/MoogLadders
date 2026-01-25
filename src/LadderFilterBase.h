@@ -3,7 +3,7 @@
 #ifndef LADDER_FILTER_BASE_H
 #define LADDER_FILTER_BASE_H
 
-#include "Util.h"
+#include "MoogUtils.h"
 
 class LadderFilterBase
 {
@@ -21,9 +21,9 @@ public:
 	
 protected:
 	
-	float cutoff;
-	float resonance;
-	float sampleRate;
+	float cutoff {0};
+	float resonance {0};
+	float sampleRate {0};
 };
 
 #endif

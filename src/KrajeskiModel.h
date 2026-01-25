@@ -4,7 +4,6 @@
 #define KRAJESKI_LADDER_H
 
 #include "LadderFilterBase.h"
-#include "Util.h"
 #include <algorithm>
 
 /*
