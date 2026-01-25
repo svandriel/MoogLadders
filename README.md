@@ -1,5 +1,7 @@
 # Moog Ladder Filters
 
+[![CMake on multiple platforms](https://github.com/ddiakopoulos/MoogLadders/actions/workflows/cmake-multi-platform.yml/badge.svg?branch=main)](https://github.com/ddiakopoulos/MoogLadders/actions/workflows/cmake-multi-platform.yml)
+
 This project contains different digital implementations of the classic 4-pole, 24 dB/octave analog filter introduced in 1965. The filter is well-regarded to add a nice character to any sound source, either synthesized or acoustic. The ladder structure consists of four one-pole filters and a global negative feedback loop.
 
 The C++11 filter classes do not rely on external libraries and can be used with little to no modification in other DSP projects; the idea of this project is that you choose which variant suits your project best and then copy the parts that you need, rather than included as a monolithic DSP library. Every filter has been modified from its original implementation for code clarity and/or runtime performance. The project includes a test app that will load a sample wav file through each of the implemented filter variants. 
