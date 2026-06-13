@@ -83,6 +83,8 @@ FILTER_NAMES = [
     "MusicDSP",
     "OberheimVariation",
     "Hyperion",
+    "HyperionTanh",
+    "HyperionLegacy",
 ]
 
 # Default parameter grids

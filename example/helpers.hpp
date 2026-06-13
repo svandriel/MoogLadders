@@ -10,6 +10,7 @@
 #include "MicrotrackerModel.h"
 #include "MusicDSPModel.h"
 #include "HyperionModel.h"
+#include "HyperionLegacyModel.h"
 #include "LadderFilterOversampledBase.h"
 
 #include <fstream>
@@ -33,6 +34,8 @@ enum class FilterModel {
     MusicDSP,
     OberheimVariation,
     Hyperion,
+    HyperionTanh,
+    HyperionLegacy,
     Count
 };
 
@@ -46,7 +49,9 @@ static const char* FilterModelNames[] = {
     "Microtracker",
     "MusicDSP",
     "OberheimVariation",
-    "Hyperion"
+    "Hyperion",
+    "HyperionTanh",
+    "HyperionLegacy"
 };
 
 // Oversampling preset identifiers
@@ -106,6 +111,8 @@ inline std::unique_ptr<LadderFilterBase> CreateFilter(FilterModel model, float s
         case FilterModel::MusicDSP: return std::make_unique<MusicDSPMoog>(sampleRate);
         case FilterModel::OberheimVariation: return std::make_unique<OberheimVariationMoog>(sampleRate);
         case FilterModel::Hyperion: return std::make_unique<HyperionMoog>(sampleRate);
+        case FilterModel::HyperionTanh: return std::make_unique<HyperionMoogTanh>(sampleRate);
+        case FilterModel::HyperionLegacy: return std::make_unique<HyperionLegacyMoog>(sampleRate);
         default: return std::make_unique<StilsonMoog>(sampleRate);
     }
 }
@@ -137,6 +144,10 @@ inline std::unique_ptr<LadderFilterBase> CreateOversampledFilter(
             return std::make_unique<MoogLadders::LadderFilterOversampledBase<OberheimVariationMoog>>(sampleRate, preset);
         case FilterModel::Hyperion:
             return std::make_unique<MoogLadders::LadderFilterOversampledBase<HyperionMoog>>(sampleRate, preset);
+        case FilterModel::HyperionTanh:
+            return std::make_unique<MoogLadders::LadderFilterOversampledBase<HyperionMoogTanh>>(sampleRate, preset);
+        case FilterModel::HyperionLegacy:
+            return std::make_unique<MoogLadders::LadderFilterOversampledBase<HyperionLegacyMoog>>(sampleRate, preset);
         default:
             return std::make_unique<MoogLadders::LadderFilterOversampledBase<StilsonMoog>>(sampleRate, preset);
     }

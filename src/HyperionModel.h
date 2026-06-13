@@ -1,9 +1,14 @@
-// HyperionMoog - A new Moog ladder filter combining:
-// - Zero-Delay Feedback via Topology-Preserving Transform (TPT)
-// - Antiderivative Antialiasing (ADAA) for reduced aliasing without oversampling
-// - Per-stage nonlinearity with adaptive thermal voltage modeling
+// HyperionMoog v2 - a zero-delay-feedback Moog ladder filter combining:
+// - Correct TPT (trapezoidal) discretization of dy/dt = wc*(S(x) - S(y)) per stage
+// - Antiderivative Antialiasing (ADAA1) on each nonlinearity's forward path
+// - A pluggable, derivative-consistent saturator policy (algebraic or tanh):
+//   the instantaneous value S, slope S', and antiderivative F always come from
+//   the same curve, which ADAA correctness depends on
+// - Newton-Raphson per-stage implicit solves with guaranteed-positive Jacobian
 // - Multi-mode output (LP, HP, BP, Notch)
-// - By Dimitri Diakopoulos and Claude, 2025 (Public Domain/Unlicense)
+// - By Dimitri Diakopoulos and Claude, 2025-2026 (Public Domain/Unlicense)
+//
+// See HyperionReference.md for the full derivation and the v1 errata.
 
 #pragma once
 
@@ -14,115 +19,200 @@
 #include <cmath>
 #include <algorithm>
 
-class HyperionMoog : public LadderFilterBase
+// Newton iterations per stage solve (after the relinearized warm start).
+// Measured: 1 iteration is transparent (THD and alias floor identical to 4
+// decimal places vs 2) and ~38% faster; raise for offline rendering if the
+// stage solve must be exact to machine precision.
+#ifndef HYPERION_NR_ITERS
+#define HYPERION_NR_ITERS 1
+#endif
+
+// Apply ADAA only at the input saturator (0, default) or additionally at
+// each ladder stage (1). Measured at 44.1k: input-only is better on BOTH
+// axes - aliasing (-46 dB vs -38 dB at the 10 kHz stress test) and resonance
+// tuning (0.96 vs 0.84 self-osc pitch ratio at fc=1 kHz) - because each
+// averaged site inside the recursive loop adds ~half a sample of delay and
+// mixes time references between S_avg(x) and the instantaneous S(y).
+#ifndef HYPERION_STAGE_ADAA
+#define HYPERION_STAGE_ADAA 0
+#endif
+
+// Precomputed constants shared by the saturator policies. All saturators are
+// normalized to unity slope at the origin and saturate to +/- 2*Vt.
+struct HyperionSatParams
+{
+    double twoVt;
+    double invTwoVt;
+    double fourVtSq;
+    double adaaEps; // |dx| threshold below which ADAA falls back to midpoint S
+
+    void Set(double Vt)
+    {
+        twoVt = 2.0 * Vt;
+        invTwoVt = 1.0 / twoVt;
+        fourVtSq = 4.0 * Vt * Vt;
+        // Relative threshold: at 1e-4 * 2Vt the quotient's cancellation error
+        // (~eps_double*|F|/dx) and the midpoint truncation error (~dx^2/24*S'')
+        // are both far below -180 dB, so the branch switch is seamless.
+        adaaEps = 1e-4 * twoVt;
+    }
+};
+
+// Algebraic sigmoid saturator (default): S(x) = x / sqrt(1 + (x/2Vt)^2).
+// Bounded to +/- 2Vt, S'(0) = 1, no transcendentals (sqrt + div only),
+// exact closed-form antiderivative. Slightly softer knee than tanh.
+struct HyperionAlgSat
+{
+    static inline double S(double x, const HyperionSatParams& p)
+    {
+        double u = x * p.invTwoVt;
+        return x / std::sqrt(1.0 + u * u);
+    }
+
+    // Ratio gain S(x)/x, the linearization that is exact at the operating
+    // point (used for the relinearized ZDF prediction). No singularity at 0.
+    static inline double SRatio(double x, const HyperionSatParams& p)
+    {
+        double u = x * p.invTwoVt;
+        return 1.0 / std::sqrt(1.0 + u * u);
+    }
+
+    // Returns S(x), writes S'(x) = (1 + u^2)^(-3/2) to sp. One sqrt, one div.
+    static inline double SAndPrime(double x, const HyperionSatParams& p, double& sp)
+    {
+        double u = x * p.invTwoVt;
+        double invR = 1.0 / std::sqrt(1.0 + u * u);
+        sp = invR * invR * invR;
+        return x * invR;
+    }
+
+    // F(x) = int S = 4Vt^2 * (sqrt(1 + u^2) - 1), F(0) = 0, F' = S exactly.
+    static inline double F(double x, const HyperionSatParams& p)
+    {
+        double u = x * p.invTwoVt;
+        return p.fourVtSq * (std::sqrt(1.0 + u * u) - 1.0);
+    }
+
+    // F(x) and S(x)/x share one sqrt: R = sqrt(1+u^2), F = 4Vt^2(R-1), ratio = 1/R
+    static inline double FAndRatio(double x, const HyperionSatParams& p, double& ratio)
+    {
+        double u = x * p.invTwoVt;
+        double R = std::sqrt(1.0 + u * u);
+        ratio = 1.0 / R;
+        return p.fourVtSq * (R - 1.0);
+    }
+};
+
+// Exact transistor-pair saturator: S(x) = 2Vt * tanh(x/2Vt).
+// The classic Moog curve; costs one tanh per evaluation and exp/log1p for F.
+struct HyperionTanhSat
+{
+    static inline double S(double x, const HyperionSatParams& p)
+    {
+        return p.twoVt * std::tanh(x * p.invTwoVt);
+    }
+
+    // Ratio gain S(x)/x = tanh(u)/u; -> 1 as u -> 0
+    static inline double SRatio(double x, const HyperionSatParams& p)
+    {
+        double u = x * p.invTwoVt;
+        double au = std::fabs(u);
+        if (au < 1e-8) return 1.0;
+        return std::tanh(u) / u;
+    }
+
+    static inline double SAndPrime(double x, const HyperionSatParams& p, double& sp)
+    {
+        double t = std::tanh(x * p.invTwoVt);
+        sp = 1.0 - t * t; // sech^2, the exact derivative of S w.r.t. x
+        return p.twoVt * t;
+    }
+
+    // F(x) = 4Vt^2 * logcosh(x/2Vt) via the numerically stable exact identity
+    // logcosh(a) = |a| + log1p(exp(-2|a|)) - ln(2).
+    static inline double F(double x, const HyperionSatParams& p)
+    {
+        double a = std::fabs(x * p.invTwoVt);
+        double lc = (a > 20.0) ? (a - MOOG_LN2) : (a + log1p(std::exp(-2.0 * a)) - MOOG_LN2);
+        return p.fourVtSq * lc;
+    }
+
+    static inline double FAndRatio(double x, const HyperionSatParams& p, double& ratio)
+    {
+        ratio = SRatio(x, p);
+        return F(x, p);
+    }
+};
+
+template <typename Sat>
+class HyperionMoogT : public LadderFilterBase
 {
 public:
 
     enum FilterMode { LP2, LP4, BP2, BP4, HP2, HP4, NOTCH };
 
-    HyperionMoog(float sampleRate) : LadderFilterBase(sampleRate)
+    // Feedback resolution quality / CPU trade-off:
+    //  STATIC        - small-signal (linear) feedback prediction, cheapest
+    //  RELINEARIZED  - per-sample ratio-gain relinearization from the previous
+    //                  sample's operating point (default). Tracks resonance and
+    //                  loop gain correctly under heavy saturation.
+    //  OUTER2        - RELINEARIZED, then a second full pass with gains
+    //                  recomputed at this sample's solution. Most accurate.
+    enum SolverQuality { QUALITY_STATIC, QUALITY_RELINEARIZED, QUALITY_OUTER2 };
+
+    HyperionMoogT(float sampleRate) : LadderFilterBase(sampleRate)
     {
-        // Initialize state
-        std::fill(std::begin(z), std::end(z), 0.0);
-        std::fill(std::begin(x_prev_stage), std::end(x_prev_stage), 0.0);
-        std::fill(std::begin(Fx_prev_stage), std::end(Fx_prev_stage), 0.0);
-        std::fill(std::begin(Vt_prev), std::end(Vt_prev), 0.0);
-        std::fill(std::begin(beta), std::end(beta), 0.0);
+        satp.Set(0.312); // Thermal voltage scaled for numerical convenience
 
-        u_prev = 0.0;
-        Fu_prev = 0.0;
-        Vt_u_prev = 0.0;
-
-        Vt = 0.312; // Thermal voltage scaled for numerical convenience
-        VtAlpha = 0.05; // Adaptive coefficient
-        adaptiveVtEnabled = true;
         drive = 1.0;
         K = 0.0;
         g = 0.0;
         G = 0.0;
         gamma = 0.0;
         alpha0 = 1.0;
+        adaaEnabled = true;
+
+        std::fill(std::begin(beta), std::end(beta), 0.0);
+        Reset();
 
         SetFilterMode(LP4);
         SetCutoff(1000.0f);
         SetResonance(0.1f);
     }
 
-    virtual ~HyperionMoog() {}
+    virtual ~HyperionMoogT() {}
+
+    void Reset()
+    {
+        std::fill(std::begin(z), std::end(z), 0.0);
+        std::fill(std::begin(xPrev), std::end(xPrev), 0.0);
+        std::fill(std::begin(FxPrev), std::end(FxPrev), 0.0);
+        std::fill(std::begin(ratioPrev), std::end(ratioPrev), 1.0); // S(v)/v -> 1 at v = 0
+        uPrev = 0.0;
+        FuPrev = 0.0;
+        y3Prev = 0.0;
+    }
 
     virtual void Process(float* samples, uint32_t n) override
     {
-        for (uint32_t s = 0; s < n; ++s) {
-
-            // zero-delay feedback sum (TPT ladder weights)
-            double sigma = beta[0] * z[0] + beta[1] * z[1] + beta[2] * z[2] + beta[3] * z[3];
-
-            // feedback subtraction and input saturation with ADAA
-            double inputScaled = samples[s] * (1.0 + K);
-            double u_raw = (inputScaled - K * sigma) * alpha0;
-            double u_drive = u_raw * drive;
-
-            // apply ADAA to input saturation
-            double Fu_out;
-            double Vt_u = GetEffectiveVt(u_drive);
-            double twoVt_u_inv = 1.0 / (2.0 * Vt_u);  // Precompute reciprocal
-            double u;
-            if (Vt_u_prev > 0.0 && fabs(Vt_u - Vt_u_prev) > (VtRelEps * Vt_u_prev)) {
-                // Vt changed significantly - use instantaneous normalized tanh
-                u = 2.0 * Vt_u * FastTanh(u_drive * twoVt_u_inv);
-                Fu_out = TanhAntiderivative(u_drive, Vt_u, twoVt_u_inv);
-            } else {
-                u = TanhADAA(u_drive, u_prev, Fu_prev, Vt_u, twoVt_u_inv, Fu_out);
-            }
-
-            u_prev = u_drive;
-            Fu_prev = Fu_out;
-            Vt_u_prev = Vt_u;
-
-            double y[4];
-            double x = u;
-
-            for (int i = 0; i < 4; i++)
-            {
-                y[i] = SolveStageADAA(i, x);
-                x = y[i];
-            }
-
-            // output mixing
-            samples[s] = static_cast<float>(modeCoeffs[0] * u + modeCoeffs[1] * y[0] + modeCoeffs[2] * y[1] + modeCoeffs[3] * y[2] + modeCoeffs[4] * y[3]);
+        for (uint32_t s = 0; s < n; ++s)
+        {
+            samples[s] = Tick(samples[s]);
         }
     }
 
     virtual void SetCutoff(float c) override
     {
-        cutoff = c;
-
-        // Prewarp for bilinear transform
-        double wd = 2.0 * MOOG_PI * cutoff;
-        double T = 1.0 / sampleRate;
-        double wa = (2.0 / T) * tan(wd * T / 2.0);
-
-        // TPT integrator coefficient
-        g = wa * T / 2.0;
-        G = g / (1.0 + g);
-        gamma = G * G * G * G;
-
-        // TPT ladder feedback weights
-        double gInv = 1.0 / (1.0 + g);
-        beta[0] = G * G * G * gInv;
-        beta[1] = G * G * gInv;
-        beta[2] = G * gInv;
-        beta[3] = gInv;
-
-        // Update feedback resolution
-        alpha0 = 1.0 / (1.0 + K * gamma);
+        // tan() blows up approaching Nyquist; 0.45*fs keeps g finite and useful
+        cutoff = std::max(10.0f, std::min(c, 0.45f * sampleRate));
+        UpdateCoefficients();
     }
 
     virtual void SetResonance(float r) override
     {
         resonance = r;
         K = 4.0 * r;
-        alpha0 = 1.0 / (1.0 + K * gamma);
+        UpdateCoefficients();
     }
 
     void SetFilterMode(FilterMode mode)
@@ -141,12 +231,18 @@ public:
 
     void SetDrive(float d) { drive = d; }
 
-    void SetAdaptiveVt(bool enable, float alpha = 0.05f)
+    void SetQuality(SolverQuality q) { quality = q; }
+
+    void SetThermalVoltage(float Vt)
     {
-        adaptiveVtEnabled = enable;
-        VtAlpha = alpha;
-        Vt_u_prev = 0.0;
-        std::fill(std::begin(Vt_prev), std::end(Vt_prev), 0.0);
+        satp.Set(Vt);
+        RefreshAdaaState();
+    }
+
+    void SetAdaaEnabled(bool enable)
+    {
+        adaaEnabled = enable;
+        if (enable) RefreshAdaaState();
     }
 
     double GetStoredEnergy() const
@@ -157,170 +253,263 @@ public:
 
 private:
 
-    // Numerically stable log(cosh(x))
-    // For |x| > 20, log(cosh(x)) ≈ |x| - ln(2)
-    inline double LogCosh(double x) const
+    // Tuning compensation, measured at 44.1 kHz and expressed in x = fc/fs
+    // (validated to hold at 48 kHz). Two fitted cubics, both anchored at 1:
+    //
+    //  Pg corrects the small linear-cutoff droop caused by the input ADAA
+    //  averager's cos(w*T/2) magnitude (fit to impulse-measured -12 dB points
+    //  over fc = 200..16000 at r = 0; <= 1.6% residual).
+    //
+    //  Pk corrects the resonance/self-oscillation pitch: the input averager
+    //  also sits inside the feedback loop, and its half-sample lag moves the
+    //  loop's -180 degree crossing down. Fit so that self-oscillation at K=4
+    //  lands on the commanded cutoff (fc = 200..9000; <= 0.1% residual).
+    //  Above the fitted range the cubics are evaluated at the range edge.
+    //
+    // The effective pole frequency blends linearly in K/4 between the two.
+    void UpdateCoefficients()
     {
-        double ax = fabs(x);
-#ifdef LOGCOSH_SLOW
-        // Original implementation using transcendentals
-        if (ax > 20.0) return ax - MOOG_LN2;  // Avoid overflow
-        return ax + log1p(exp(-2.0 * ax)) - MOOG_LN2;
-#else
-        // Fast piecewise polynomial approximation
-        // For large |x|: log(cosh(x)) ≈ |x| - ln(2)
-        if (ax > 4.0) return ax - MOOG_LN2;
+        double x = cutoff / sampleRate;
 
-        // For small |x|: Taylor series log(cosh(x)) = x²/2 - x⁴/12 + x⁶/45 - x⁸/2520 + ...
-        if (ax < 0.5) {
-            double x2 = ax * ax;
-            // log(cosh(x)) ≈ x²/2 - x⁴/12 + x⁶/45
-            return x2 * (0.5 + x2 * (-0.0833333333333333 + x2 * 0.0222222222222222));
+        double xg = std::min(x, 0.3628); // Pg fitted up to 16 kHz @ 44.1k
+        double Pg = 1.0 + xg * (-0.004760 + xg * (4.395003 + xg * -8.333518));
+
+        double xk = std::min(x, 0.2041); // Pk fitted up to 9 kHz @ 44.1k
+        double Pk = 1.0 + xk * (1.927090 + xk * (1.493155 + xk * -15.779799));
+
+        double blend = 0.25 * K;
+        double fcEff = cutoff * (Pg + blend * (Pk - Pg));
+        fcEff = std::min(fcEff, 0.49 * (double)sampleRate); // keep prewarp finite
+
+        double wd = 2.0 * MOOG_PI * fcEff;
+        double T = 1.0 / sampleRate;
+        double wa = (2.0 / T) * tan(wd * T / 2.0);
+
+        // TPT integrator coefficient (raw); G is the linearized one-pole gain
+        g = wa * T / 2.0;
+        G = g / (1.0 + g);
+        gamma = G * G * G * G;
+
+        // Feedback weights: with the linearized stage y = G*x + (1-G)*z the
+        // ladder output is y3 = G^4*u + sigma, sigma = sum(beta[i]*z[i])
+        double gInv = 1.0 / (1.0 + g);
+        beta[0] = G * G * G * gInv;
+        beta[1] = G * G * gInv;
+        beta[2] = G * gInv;
+        beta[3] = gInv;
+
+        alpha0 = 1.0 / (1.0 + K * gamma);
+    }
+
+    // Per-sample feedback prediction coefficients (filled per quality tier)
+    struct LoopGains
+    {
+        double beta[4]; // sigma weights on z[i]
+        double alpha0;  // feedback resolution
+        double Gf[4];   // per-stage linearized forward gains (Newton warm start)
+        double d[4];    // per-stage linearized state gains
+        bool haveStageGains;
+    };
+
+    // Build the relinearized loop gains from ratio gains S(v)/v evaluated at
+    // an operating point. Stage i: y = z + g*(ri*x - ro*y) linearizes to
+    //   y = Gf*x + d*z,  d = 1/(1 + g*ro),  Gf = g*ri*d
+    // where ri is the input-side ratio gain (sgain[i]) and ro the output-side
+    // one (sgain[i+1]: stage i's output is stage i+1's input, sgain[4] closes
+    // y3). The cascade gives the sigma weights, and the loop closes through
+    // the input saturator's ratio gain su and drive:
+    //   alpha0 = 1/(1 + K*su*drive*Gf0*Gf1*Gf2*Gf3)
+    inline void ComputeGainsFromRatios(const double sgain[5], double su, LoopGains& lg) const
+    {
+        for (int i = 0; i < 4; i++) {
+            lg.d[i] = 1.0 / (1.0 + g * sgain[i + 1]);
+            lg.Gf[i] = g * sgain[i] * lg.d[i];
         }
-
-        // For medium |x| (0.5 to 4.0): Chebyshev-derived polynomial fit
-        // Fit to minimize max error over [0.5, 4.0]
-        // log(cosh(x)) ≈ c0 + c1*x + c2*x² + c3*x³ + c4*x⁴
-        double x2 = ax * ax;
-        double x3 = x2 * ax;
-        double x4 = x2 * x2;
-        return -0.0022754839 + ax * 0.0277550028 + x2 * 0.4638358950 + x3 * 0.0109256377 + x4 * -0.0037463693;
-#endif
+        lg.beta[3] = lg.d[3];
+        lg.beta[2] = lg.Gf[3] * lg.d[2];
+        lg.beta[1] = lg.Gf[3] * lg.Gf[2] * lg.d[1];
+        lg.beta[0] = lg.Gf[3] * lg.Gf[2] * lg.Gf[1] * lg.d[0];
+        double gammaHat = lg.Gf[0] * lg.Gf[1] * lg.Gf[2] * lg.Gf[3];
+        lg.alpha0 = 1.0 / (1.0 + K * su * drive * gammaHat);
+        lg.haveStageGains = true;
     }
 
-    // Normalized saturation: S(x) = 2*Vt * tanh(x / (2*Vt))
-    // This has unity gain at the origin: S'(0) = 1
-    // Antiderivative: F(x) = 4*Vt^2 * ln(cosh(x / (2*Vt)))
-    inline double TanhAntiderivative(double x, double Vt_eff, double twoVt_inv) const
+    // One feedback resolution + stage cascade pass. Does NOT commit any state;
+    // outputs the saturated input u, stage outputs y[4], and the per-site
+    // antiderivatives and ratio gains needed to commit afterwards.
+    inline void RunPass(double input, const LoopGains& lg,
+                        double& u, double& uDrive, double& Fu,
+                        double y[4], double Fx[4], double ratios[5]) const
     {
-        return 4.0 * Vt_eff * Vt_eff * LogCosh(x * twoVt_inv);
-    }
+        double sigma = lg.beta[0] * z[0] + lg.beta[1] * z[1] + lg.beta[2] * z[2] + lg.beta[3] * z[3];
 
-    // ADAA1: First-order antialiased normalized tanh
-    // Returns average value of S(x) = 2*Vt*tanh(x/(2*Vt)) over interval [x_prev, x_curr]
-    inline double TanhADAA(double x_curr, double x_prev, double Fx_prev_stage_val, double Vt_eff, double twoVt_inv, double& F_out) const
-    {
-        F_out = TanhAntiderivative(x_curr, Vt_eff, twoVt_inv);
-        double denom = x_curr - x_prev;
-        if (fabs(denom) < 1e-12) {
-            // Degenerate case: return instantaneous normalized tanh (use FastTanh)
-            return 2.0 * Vt_eff * FastTanh(x_curr * twoVt_inv);
-        }
-        return (F_out - Fx_prev_stage_val) / denom;
-    }
+        double inputScaled = input * (1.0 + K); // passband gain compensation
+        double uRaw = (inputScaled - K * sigma) * lg.alpha0;
+        uDrive = uRaw * drive;
 
-    // Derivative of normalized tanh: d/dx [2*Vt * tanh(x/(2*Vt))] = sech^2(x/(2*Vt))
-    // Note: unity at origin (sech^2(0) = 1)
-    inline double TanhDerivative(double x, double twoVt_inv) const
-    {
-        double scaled = x * twoVt_inv;
-        if (fabs(scaled) > 20.0) return 0.0;
-        double t = FastTanh(scaled);
-        return 1.0 - t * t;
-    }
-
-    // Fast tanh approximation for initial Newton guess (from Util.h)
-    inline double FastTanh(double x) const
-    {
-        double x2 = x * x;
-        return x * (27.0 + x2) / (27.0 + 9.0 * x2);
-    }
-
-    // Adaptive thermal voltage
-    inline double GetEffectiveVt(double x) const
-    {
-        return adaptiveVtEnabled ? Vt * (1.0 + VtAlpha * fabs(x)) : Vt;
-    }
-
-    // Solve the implicit stage equation (TPT-consistent):
-    //   y = z[i] + G * (S_avg(x) - S(y))
-    // where S_avg(x) is the ADAA-averaged nonlinearity on the explicit input
-    inline double SolveStageADAA(int i, double x)
-    {
-        double Vt_eff = GetEffectiveVt(x);
-        double twoVt_inv = 1.0 / (2.0 * Vt_eff); // Precompute reciprocal
-        double twoVt = 2.0 * Vt_eff;
-        bool vt_changed = (Vt_prev[i] > 0.0) && (fabs(Vt_eff - Vt_prev[i]) > (VtRelEps * Vt_prev[i]));
-
-        // Initial guess using fast tanh approximation (normalized: 2*Vt*tanh(v/(2*Vt)))
-        double Sx_inst = twoVt * FastTanh(x * twoVt_inv);
-        double Sy_inst = twoVt * FastTanh(z[i] * twoVt_inv);
-        double y = z[i] + G * (Sx_inst - Sy_inst);
-
-        // Precompute F_x
-        double F_x = TanhAntiderivative(x, Vt_eff, twoVt_inv);
-        double denom = x - x_prev_stage[i];
-        bool use_adaa = !vt_changed && fabs(denom) > 1e-12;
-        double denom_inv = use_adaa ? (1.0 / denom) : 0.0;  // Precompute for division
-
-        double Sx_avg;
-        if (use_adaa) {
-            Sx_avg = (F_x - Fx_prev_stage[i]) * denom_inv;
+        Fu = 0.0;
+        if (adaaEnabled) {
+            Fu = Sat::FAndRatio(uDrive, satp, ratios[4]);
+            double du = uDrive - uPrev;
+            u = (std::fabs(du) < satp.adaaEps) ? Sat::S(0.5 * (uDrive + uPrev), satp)
+                                               : (Fu - FuPrev) / du;
         } else {
-            // Use instantaneous normalized tanh 
-            Sx_avg = twoVt * FastTanh(x * twoVt_inv);
+            ratios[4] = Sat::SRatio(uDrive, satp);
+            u = ratios[4] * uDrive; // S(x) = ratio * x exactly
         }
 
-        // Newton-Raphson iteration
-        for (int iter = 0; iter < nr_iters; iter++)
+        double x = u;
+        for (int i = 0; i < 4; i++)
         {
-            double Sy = twoVt * FastTanh(y * twoVt_inv);
+            double SxAvg;
+#if HYPERION_STAGE_ADAA
+            if (adaaEnabled) {
+                Fx[i] = Sat::FAndRatio(x, satp, ratios[i]);
+                double dx = x - xPrev[i];
+                SxAvg = (std::fabs(dx) < satp.adaaEps) ? Sat::S(0.5 * (x + xPrev[i]), satp)
+                                                       : (Fx[i] - FxPrev[i]) / dx;
+            } else
+#endif
+            {
+                Fx[i] = 0.0;
+                ratios[i] = Sat::SRatio(x, satp);
+                SxAvg = ratios[i] * x;
+            }
 
-            // Residual: y - z[i] - G*(Sx_avg - Sy) = 0
-            double residual = y - z[i] - G * (Sx_avg - Sy);
+            // Warm start from the (re)linearized stage model
+            double y0 = lg.Gf[i] * x + lg.d[i] * z[i];
+            y[i] = SolveStage(SxAvg, z[i], y0);
+            x = y[i];
+        }
+    }
 
-            // Jacobian using FastTanh-based derivative
-            double dSy = TanhDerivative(y, twoVt_inv);
-            double jacobian = 1.0 + G * dSy;
-
-            double delta = residual / jacobian;
-            y -= delta;
-
-            if (fabs(delta) < 1e-8) break;
+    inline float Tick(double input)
+    {
+        LoopGains lg;
+        if (quality == QUALITY_STATIC) {
+            for (int i = 0; i < 4; i++) {
+                lg.beta[i] = beta[i];
+                lg.Gf[i] = G;        // linear TPT warm start
+                lg.d[i] = 1.0 - G;   // = 1/(1+g)
+            }
+            lg.alpha0 = alpha0;
+            lg.haveStageGains = true;
+        } else {
+            // Operating point: previous sample's committed solution, reusing
+            // the ratio gains cached by the previous commit (y3 is the only
+            // signal that is not also some stage's input)
+            double sgain[5] = { ratioPrev[0], ratioPrev[1], ratioPrev[2], ratioPrev[3],
+                                Sat::SRatio(y3Prev, satp) };
+            ComputeGainsFromRatios(sgain, ratioPrev[4], lg);
         }
 
-        // Update TPT state (trapezoidal integrator)
-        z[i] = 2.0 * y - z[i];
+        double u, uDrive, Fu;
+        double y[4], Fx[4], ratios[5];
+        RunPass(input, lg, u, uDrive, Fu, y, Fx, ratios);
 
-        // Update ADAA state for next sample - reuse F_x computed above
-        x_prev_stage[i] = x;
-        Fx_prev_stage[i] = F_x;
-        Vt_prev[i] = Vt_eff;
+        if (quality == QUALITY_OUTER2) {
+            // Second pass with gains taken at THIS sample's solution
+            double xOp[4] = { u, y[0], y[1], y[2] };
+            double sgain[5];
+            for (int i = 0; i < 4; i++) sgain[i] = Sat::SRatio(xOp[i], satp);
+            sgain[4] = Sat::SRatio(y[3], satp);
+            ComputeGainsFromRatios(sgain, Sat::SRatio(uDrive, satp), lg);
+            RunPass(input, lg, u, uDrive, Fu, y, Fx, ratios);
+        }
 
+        // Commit state
+        double x = u;
+        for (int i = 0; i < 4; i++)
+        {
+            z[i] = 2.0 * y[i] - z[i]; // trapezoidal state update
+            xPrev[i] = x;
+            FxPrev[i] = Fx[i];
+            ratioPrev[i] = ratios[i];
+            x = y[i];
+        }
+        uPrev = uDrive;
+        FuPrev = Fu;
+        ratioPrev[4] = ratios[4];
+        y3Prev = y[3];
+
+        return static_cast<float>(
+            modeCoeffs[0] * u + modeCoeffs[1] * y[0] + modeCoeffs[2] * y[1] +
+            modeCoeffs[3] * y[2] + modeCoeffs[4] * y[3]);
+    }
+
+    // Solve the implicit stage equation, the trapezoidal (TPT) discretization
+    // of dy/dt = wc*(S(x) - S(y)):
+    //   y = z + g * (Savg(x) - S(y))
+    // Raw g (not G = g/(1+g)): in the linear limit this reduces to the
+    // standard TPT one-pole y = G*x + (1-G)*z. Savg(x) is the ADAA1 mean of S
+    // over [xPrev, x]; the exact identity (F(x)-F(p))/(x-p) = S(m) +
+    // (dx^2/24)*S''(m) + O(dx^4), m = (x+p)/2, makes midpoint S the correct
+    // small-interval fallback (computed by the caller). With S' in (0,1] the
+    // Jacobian 1 + g*S'(y) >= 1, so the residual is strictly monotonic in y:
+    // the root is unique and Newton is well-conditioned everywhere.
+    inline double SolveStage(double SxAvg, double zi, double yGuess) const
+    {
+        double y = yGuess;
+        for (int iter = 0; iter < nrIters; ++iter)
+        {
+            double sp;
+            double Sy = Sat::SAndPrime(y, satp, sp);
+            double residual = y - zi - g * (SxAvg - Sy);
+            double delta = residual / (1.0 + g * sp);
+            y -= delta;
+            if (std::fabs(delta) < newtonTol) break;
+        }
         return y;
+    }
+
+    // Recompute stored antiderivatives and ratio gains so every ADAA quotient
+    // differences two F values from the same curve (required after Vt changes
+    // or re-enabling ADAA)
+    void RefreshAdaaState()
+    {
+        for (int i = 0; i < 4; i++) FxPrev[i] = Sat::FAndRatio(xPrev[i], satp, ratioPrev[i]);
+        FuPrev = Sat::FAndRatio(uPrev, satp, ratioPrev[4]);
     }
 
     // TPT integrator states (cap voltages)
     double z[4];
 
-    // TPT ceoffs
-    double G; // g/(1+g) integrator gain
-    double g; // Raw integrator coefficient
-    double gamma; // G^4 for feedback
-    double alpha0; // Feedback resolution: 1/(1 + K*gamma)
-    double K; // Resonance [0, 4]
-    double beta[4]; // Feedback weights for TPT ladder sum
+    // TPT coefficients
+    double g;       // Raw integrator coefficient wa*T/2
+    double G;       // g/(1+g), linearized one-pole gain
+    double gamma;   // G^4, linearized open-loop ladder gain
+    double alpha0;  // Feedback resolution 1/(1 + K*gamma)
+    double K;       // Resonance [0, 4]
+    double beta[4]; // Feedback weights for the ZDF sigma sum
 
-    // ADAA state: previous stage input and antiderivative per stage
-    double x_prev_stage[4];
-    double Fx_prev_stage[4];
-    double Vt_prev[4];
+    // ADAA state: previous input and antiderivative per nonlinearity site
+    double xPrev[4];
+    double FxPrev[4];
+    double uPrev;
+    double FuPrev;
 
-    // Input saturation ADAA state
-    double u_prev;
-    double Fu_prev;
-    double Vt_u_prev;
+    // Previous sample's final stage output (operating point for relinearization;
+    // the other stage outputs equal xPrev[1..3])
+    double y3Prev;
 
-    // Thermal voltage modeling
-    double Vt; // Base thermal voltage (scaled for numerical convenience)
-    double VtAlpha; // Adaptive coefficient
-    bool adaptiveVtEnabled;
+    // Cached ratio gains S(v)/v at the committed operating point:
+    // [0..3] at xPrev[i], [4] at uPrev. Shares the sqrt with F for AlgSat.
+    double ratioPrev[5];
+
+    HyperionSatParams satp;
+    bool adaaEnabled;
+    SolverQuality quality = QUALITY_RELINEARIZED;
 
     double drive;
     double modeCoeffs[5];
 
-    static constexpr double VtRelEps = 1e-6;
-    int nr_iters = 2;
+    int nrIters = HYPERION_NR_ITERS;
+    static constexpr double newtonTol = 1e-10;
 };
+
+// Default: algebraic saturator (fastest, transcendental-free).
+using HyperionMoog = HyperionMoogT<HyperionAlgSat>;
+// Classic curve: exact tanh transistor-pair saturation.
+using HyperionMoogTanh = HyperionMoogT<HyperionTanhSat>;
 
 #endif // HYPERION_LADDER_H
