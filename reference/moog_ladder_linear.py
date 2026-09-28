@@ -91,3 +91,54 @@ def frequency_response(n, fs, fc, k, freqs):
 def magnitude_db(n, fs, fc, k, freqs):
     """20*log10 magnitude of the cascade at freqs, given in Hz."""
     return 20.0 * np.log10(np.abs(frequency_response(n, fs, fc, k, freqs)))
+
+
+def analog_response(fc, fs, k, freqs):
+    """Continuous-time H(s) that biquad_coeffs discretizes, evaluated at freqs.
+
+    freqs are DIGITAL frequencies in Hz, the same convention as magnitude_db, and
+    they are mapped onto the analog axis by the inverse bilinear warp. That warp
+    is not optional: biquad_coeffs is a prewarped bilinear transform, so a digital
+    frequency f corresponds to the analog frequency fs/pi * tan(pi*f/fs), and
+    wc = 2*fs*tan(pi*fc/fs) is the corner the prewarp lands on digital fc. Reading
+    freqs as analog radians per second instead is worth up to 23 dB of spurious
+    disagreement in the upper stopband, because the two axes part company near
+    Nyquist. The warp is only meaningful for 0 < f < fs/2, the same range
+    magnitude_db is asked for.
+
+    The prototype is the ladder the paper actually factors, not the four-pole
+    closed loop H = 1/((1+s/wc)**4 + k). Those agree exactly at k=0 and k=4 and
+    differ by as much as 9.6 dB in the midband for 0 < k < 4, so testing the port
+    against the closed-loop form rejects a correct port. In u = s/wc, with
+    r = k**(1/4), the paper's factorization into two second-order sections reads
+
+        H(s) = 1/a0**4 / [(u**2 + 2*(b0/a0)*u + 1) * (u**2 + 2*(b1/a0)*u + (a1/a0)**2)]
+
+    for a0sq = 1 + r**2 - sqrt(2)*r, a1sq = 1 + r**2 + sqrt(2)*r,
+    b0 = 1 - r/sqrt(2), b1 = 1 + r/sqrt(2) and a0 = sqrt(a0sq). Everything is in
+    closed form in k alone: no call into aw, bw or biquad_coeffs, so a wrong
+    cosine argument or a transposed A0BD/A02 index in the port shows up as a
+    disagreement here instead of cancelling out. DC gain is 1/(1+k), which is what
+    the upstream file's gaincomp == 2 branch compensates by multiplying by (1+k).
+
+    Measured against the port over 10 Hz to 0.45*fs: agreement to 1.5e-13 dB at
+    k=0, 1.4e-13 dB at k=2 and 2.7e-11 dB at k=3.99, and 9e-9 dB in the worst case
+    of an fc sweep from 50 Hz to 12 kHz. The a0/a1 cross-indexed mutant of
+    A0BD/A02 that the task brief warns about is rejected here by 30 dB at k=1 and
+    71 dB at k=3.99, though not at k=0, where every aw and bw is 1 and the index
+    cannot matter.
+    """
+    wc = 2.0 * fs * np.tan(np.pi * fc / fs)
+    r = k**0.25
+    root2 = np.sqrt(2.0)
+    a0sq = 1.0 + r * r - root2 * r
+    a1sq = 1.0 + r * r + root2 * r
+    a0 = np.sqrt(a0sq)
+    b0 = 1.0 - r / root2
+    b1 = 1.0 + r / root2
+    f = np.asarray(freqs, dtype=float)
+    u = 2j * (fs * np.tan(np.pi * f / fs)) / wc
+    den = (u * u + 2.0 * (b0 / a0) * u + 1.0) * (
+        u * u + 2.0 * (b1 / a0) * u + a1sq / a0sq
+    )
+    return (1.0 / a0**4) / den

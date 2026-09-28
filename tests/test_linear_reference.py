@@ -95,6 +95,44 @@ def test_k_four_is_marginal_stability_with_poles_at_the_corner():
     assert np.allclose(pole_hz, wc / (2.0 * np.pi), rtol=1e-9)
 
 
+def test_ported_coeffs_match_independent_analog_derivation():
+    """The ported cascade must equal the analog prototype it discretizes.
+
+    analog_response evaluates the ladder's continuous-time transfer function in
+    closed form in k, without touching aw, bw or biquad_coeffs, and maps the
+    requested frequencies onto the analog axis with the inverse bilinear warp.
+    The ported cascade is a prewarped bilinear transform of that prototype, so the
+    two must agree. They agree to 1.5e-13 dB at k=0, 1.4e-13 dB at k=2 and
+    2.7e-11 dB at k=3.99, so the 1e-3 dB bound below is eight orders of magnitude
+    of headroom.
+
+    Two wrong versions of this check were tried and rejected while writing it,
+    and neither should be reintroduced:
+
+    - Comparing against H = 1/((1+s/wc)**4 + k), the closed loop of four unity
+      one-poles with loop gain k. That prototype is not the one the paper
+      factors. The two coincide at k=0 and k=4 and part company by up to 9.6 dB
+      in the midband in between, so this version fails on a correct port.
+    - Evaluating the prototype at 2*pi*f as if f were an analog frequency.
+      biquad_coeffs is a bilinear transform, so the analog frequency for digital
+      f is fs/pi*tan(pi*f/fs); skipping the warp is worth up to 23 dB of
+      spurious error in the upper stopband.
+
+    The -120 dB band mask from the original brief is kept as cheap insurance
+    against differencing two numerically-zero stopbands in dB, which produces
+    meaningless tens-of-dB errors. It is no longer load-bearing: with the warp the
+    analog magnitude is evaluated at |u| < 90 across this sweep, so the stopband
+    stays well away underflow.
+    """
+    fc = 1000.0
+    freqs = np.logspace(1, np.log10(0.45 * FS), 4000)
+    for k in (0.0, 1.0, 2.0, 3.0, 3.99):
+        ported = mll.magnitude_db(N, FS, fc, k, freqs)
+        analog = 20.0 * np.log10(np.abs(mll.analog_response(fc, FS, k, freqs)))
+        band = ported > -120.0
+        assert np.max(np.abs(ported[band] - analog[band])) < 1e-3
+
+
 def test_peak_gain_grows_toward_k_four():
     freqs = np.logspace(1, np.log10(0.45 * FS), 20000)
     peak3 = _mag_db(1000.0, 3.0, freqs).max()
