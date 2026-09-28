@@ -106,18 +106,36 @@ def analog_response(fc, fs, k, freqs):
     Nyquist. The warp is only meaningful for 0 < f < fs/2, the same range
     magnitude_db is asked for.
 
-    The prototype is the ladder the paper actually factors, not the four-pole
-    closed loop H = 1/((1+s/wc)**4 + k). Those agree exactly at k=0 and k=4 and
-    differ by as much as 9.6 dB in the midband for 0 < k < 4, so testing the port
-    against the closed-loop form rejects a correct port. In u = s/wc, with
-    r = k**(1/4), the paper's factorization into two second-order sections reads
+    The prototype is the four-pole closed loop, four unity one-poles in cascade
+    with feedback around all four:
 
+        H(s) = 1 / [(1 + a0*s/wc)**4 + k],    a0 = aw(4, 0, k)
+
+    n = 4 only: this specializes aw and bw to the N = 4 case, while its siblings
+    take n. The loop's one-pole corner is wc/a0, not the prewarped wc itself. The
+    upstream file corroborates this reading: its gaincomp == 3 branch multiplies by
+    alpha(N, k)**N, and alpha(N, k) is aw(N, 0, k) = a0, which is exactly the
+    factor by which the corner sits below the prewarped one.
+
+    a0 equals 1 exactly at k=0 and k=4, and dips to 1/sqrt(2) near k=0.25. The
+    natural short form of this prototype, 1/[(1 + s/wc)**4 + k], takes the corner
+    to be wc itself and therefore coincides with the port only at those two
+    endpoints. That is why a check written in the short form cannot pass for
+    general k: it differs by up to 9.6 dB in the midband for 0 < k < 4. The
+    factored two-section form is the derivation, obtained by matching the
+    bilinear image of an analog section u**2 + P*u + Q, which is digital
+    [1, a1, a2] proportional to [M**2 + P*M + Q, 2*(Q - M**2), M**2 - P*M + Q]
+    with M = 1/d, against biquad_coeffs. That gives P_w = 2*b_w/a_0 and
+    Q_w = (a_w/a_0)**2 for w = 0, 1, and a0**4 times the resulting product
+    collapses back to (1 + a0*u)**4 + k. Concretely, with r = k**(1/4) and
+    u = s/wc:
+
+        a0sq = 1 + r**2 - sqrt(2)*r      a1sq = 1 + r**2 + sqrt(2)*r
+        b0   = 1 - r/sqrt(2)             b1   = 1 + r/sqrt(2)      a0 = sqrt(a0sq)
         H(s) = 1/a0**4 / [(u**2 + 2*(b0/a0)*u + 1) * (u**2 + 2*(b1/a0)*u + (a1/a0)**2)]
 
-    for a0sq = 1 + r**2 - sqrt(2)*r, a1sq = 1 + r**2 + sqrt(2)*r,
-    b0 = 1 - r/sqrt(2), b1 = 1 + r/sqrt(2) and a0 = sqrt(a0sq). Everything is in
-    closed form in k alone: no call into aw, bw or biquad_coeffs, so a wrong
-    cosine argument or a transposed A0BD/A02 index in the port shows up as a
+    All of it is closed form in k alone: no call into aw, bw or biquad_coeffs, so a
+    wrong cosine argument or a transposed A0BD/A02 index in the port shows up as a
     disagreement here instead of cancelling out. DC gain is 1/(1+k), which is what
     the upstream file's gaincomp == 2 branch compensates by multiplying by (1+k).
 

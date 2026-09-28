@@ -77,9 +77,12 @@ def test_fc_to_minus3db_ratio_is_pinned():
 def test_k_four_is_marginal_stability_with_poles_at_the_corner():
     """At absolute k=4 the 4-pole ladder is marginally stable.
 
-    The analog transfer function is H(s) = wc**4 / ((s+wc)**4 + k*wc**4). At k=4
-    the denominator (s+wc)**4 + 4*wc**4 has all four roots on the imaginary axis
-    at s = +/- j*wc, so the pole frequency equals the corner frequency.
+    The analog transfer function is the four-pole closed loop
+    H(s) = 1/((1 + a0*s/wc)**4 + k) with a0 = aw(4, 0, k), which is 1 exactly at
+    k=4. So at k=4 the denominator is (s+wc)**4 + 4*wc**4, whose roots in s/wc are
+    {j, -j, -2+j, -2-j}: only the pair at +/- j is on the imaginary axis, the other
+    two are at -2 +/- j. All four share the same imaginary part, so all four pole
+    frequencies equal the corner frequency, which is what this asserts.
 
     Verified during planning: with fc=1000 and wc = 2*fs*tan(pi*fc/fs), the roots
     at k=4 all sit at 1001.6951 Hz against a corner of 1000 Hz.
@@ -103,16 +106,17 @@ def test_ported_coeffs_match_independent_analog_derivation():
     requested frequencies onto the analog axis with the inverse bilinear warp.
     The ported cascade is a prewarped bilinear transform of that prototype, so the
     two must agree. They agree to 1.5e-13 dB at k=0, 1.4e-13 dB at k=2 and
-    2.7e-11 dB at k=3.99, so the 1e-3 dB bound below is eight orders of magnitude
-    of headroom.
+    2.7e-11 dB at k=3.99, so the 1e-3 dB bound below is more than seven orders of
+    magnitude of headroom.
 
     Two wrong versions of this check were tried and rejected while writing it,
     and neither should be reintroduced:
 
-    - Comparing against H = 1/((1+s/wc)**4 + k), the closed loop of four unity
-      one-poles with loop gain k. That prototype is not the one the paper
-      factors. The two coincide at k=0 and k=4 and part company by up to 9.6 dB
-      in the midband in between, so this version fails on a correct port.
+    - Comparing against H = 1/((1+s/wc)**4 + k), which takes the loop's one-pole
+      corner to be wc itself instead of wc/a0 for a0 = aw(4, 0, k). a0 is 1
+      exactly at k=0 and k=4 and dips to 1/sqrt(2) near k=0.25, so the two forms
+      coincide at the endpoints and part company by up to 9.6 dB in the midband in
+      between. The short form therefore fails on a correct port for general k.
     - Evaluating the prototype at 2*pi*f as if f were an analog frequency.
       biquad_coeffs is a bilinear transform, so the analog frequency for digital
       f is fs/pi*tan(pi*f/fs); skipping the warp is worth up to 23 dB of
