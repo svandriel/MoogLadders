@@ -12,8 +12,27 @@ downstream may describe results from this module as hardware-referenced.
 Always float64. The sample loop is a direct port and is not optimized; the
 upstream Octave loop is equally sequential.
 
-k is the absolute global feedback gain in [0, 4], with self-oscillation at k=4.
-fc is the leading-pole cutoff, not the -3 dB point, as in the linear reference.
+Parameter conventions and scope, as in the linear sibling's header:
+
+- k is the ABSOLUTE global feedback gain, self-oscillation at k=4. Never the
+  normalized gain, so the upstream knorm branch is not ported.
+- fc is the leading-pole cutoff, NOT the -3 dB point, and the upstream's
+  fccomp = true. The .m's `fc .*= alpha(k)` at lines 100 to 102 is deliberately
+  NOT applied, exactly as in moog_ladder_linear, which is why this oracle and the
+  linear reference agree in the linear limit.
+- DC gain is -1/(1+k): inverted, and down by (1+k). Neither is compensated here,
+  because the upstream gaincomp argument is not ported. A caller wanting a
+  positive unity DC must multiply by -(1+k) itself. The inversion is upstream's
+  sign convention, not a defect: the 2013 model in moog_ladder_old.m shares it,
+  deriving the identical -1/(1+k) law at DC. Never "fix" it in isolation.
+- fc and k are NOT clamped. The .m runs limit() at lines 113 and 114 and warns;
+  here an out-of-range sweep value silently returns finite, meaningless output
+  (fc above fs/2 turns tan(pi*fc/fs) negative and the filter runs backwards), so
+  clamp in the caller rather than trusting a warning that will not come.
+- Time-invariant scalar parameters only. Per-sample fc/k vectors are not
+  supported and raise a broadcast error rather than working. The loop itself is
+  generic in n, but only n=4 is validated, and the linear reference it is checked
+  against is even-order only.
 """
 
 import numpy as np
