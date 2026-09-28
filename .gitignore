@@ -1,6 +1,7 @@
 # User-specific files
 *.suo
 *.user
+.superpowers
 
 # Build results
 [Dd]ebug/
@@ -26,6 +27,7 @@ ipch/
 # XCode
 .DS_Store
 build/
+.venv/
 *.pbxuser
 !default.pbxuser
 *.mode1v3
@@ -43,3 +45,7 @@ DerivedData
 *.reapeaks
 
 local_ignore/
+
+# Verification output
+filter_validation/
+__pycache__/
