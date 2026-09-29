@@ -577,3 +577,57 @@ def test_thd_below_16bit_floor_survives_float32_but_not_pcm16(tmp_path):
 
     assert fe.thd_percent(back32, fs) == pytest.approx(10.0, rel=0.02)
     assert fe.thd_percent(back16, fs) < 5.0
+
+
+def test_reference_magnitude_is_zero_db_at_dc_for_zero_k():
+    d = fe.reference_magnitude_db(1000.0, 0.0, np.array([1e-3, 1.0, 10.0]))
+    assert d[0] == pytest.approx(0.0, abs=1e-9)
+    # 10 Hz is 0.01*fc, not DC. The cascade is 1/((1+x**2)**2) with x = f/fc, so
+    # the low-frequency departure is -17.37*x**2 dB to leading order: -0.0017 dB
+    # here, and exactly what the reference returns. Pinning it to 1e-3 would be
+    # pinning a 4-pole rolloff to 0, which is not a filter property.
+    assert d[2] == pytest.approx(0.0, abs=1e-2)
+
+
+def test_reference_matches_reference_module():
+    from reference import moog_ladder_linear as mll
+    freqs = np.logspace(1, np.log10(0.4 * 44100), 500)
+    assert np.allclose(
+        fe.reference_magnitude_db(2000.0, 2.0, freqs),
+        mll.magnitude_db(4, 44100.0, 2000.0, 2.0, freqs),
+    )
+
+
+def test_reference_peak_gain_rises_with_k():
+    freqs = np.logspace(1, np.log10(0.4 * 44100), 4000)
+    # magnitude_db is uncompensated, so its DC gain is 1/(1+k) and the passband
+    # itself falls by 6 dB per doubling of k. The raw band maximum is therefore
+    # not monotonic: k=0 is a flat 0 dB passband at -0.0017 dB, which sits above
+    # the -3.72 dB resonant peak of k=1. The resonance is the peak above the
+    # passband, and it rises strictly: 0.0, 2.30, 7.80, 15.54 dB.
+    humps = []
+    for k in (0.0, 1.0, 2.0, 3.0):
+        curve = fe.reference_magnitude_db(1000.0, k, freqs)
+        humps.append((curve - curve[0]).max())
+    assert all(b > a for a, b in zip(humps, humps[1:]))
+
+
+def test_best_r_for_target_finds_injected_optimum():
+    target = np.zeros(100)
+    grid = [0.0, 0.25, 0.5, 0.75, 1.0]
+    curves = [target + 6.0, target, target + 3.0, target + 9.0, target + 12.0]
+    r, err, idx = fe.best_r_for_target(curves, grid, target)
+    assert idx == 1
+    assert r == grid[1]
+    assert err == pytest.approx(0.0, abs=1e-9)
+
+
+def test_measured_magnitude_interpolates_onto_log_freqs():
+    n = 8192
+    freqs = np.logspace(1, np.log10(0.4 * 44100), 200)
+    y = np.zeros(n)
+    y[0] = 1.0
+    d = fe.measured_magnitude_db(y, freqs)
+    assert d.shape == freqs.shape
+    assert np.all(np.isfinite(d))
+    assert d[0] == pytest.approx(0.0, abs=1e-6)

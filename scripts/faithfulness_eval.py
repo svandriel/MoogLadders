@@ -469,3 +469,70 @@ def thd_percent(x, fs, orders=10):
         amp = goertzel_amplitude(x, fs, freq)
         power += amp * amp
     return 100.0 * np.sqrt(power) / fund
+
+
+def reference_magnitude_db(fc, k, freqs):
+    """Analytic reference magnitude in dB at freqs, in Hz.
+
+    fc is the leading-pole cutoff, NOT the -3 dB point of the cascade. See
+    reference/moog_ladder_linear.py and
+    tests/test_linear_reference.py::test_fc_to_minus3db_ratio_is_pinned.
+    """
+    from reference import moog_ladder_linear as mll
+    return mll.magnitude_db(ORDER, SAMPLE_RATE, fc, k, np.asarray(freqs, dtype=float))
+
+
+def measured_magnitude_db(y, freqs):
+    """Magnitude in dB of an impulse response, interpolated onto freqs in Hz.
+
+    The impulse response is not windowed. The existing suite windowed it with a
+    Hann window whose first sample is zero, and since the first sample is the
+    entire excitation, the measurement read the window, not the filter.
+    """
+    freqs = np.asarray(freqs, dtype=float)
+    h = np.abs(np.fft.rfft(np.asarray(y, dtype=np.float64)))
+    f = np.fft.rfftfreq(len(y), 1.0 / SAMPLE_RATE)
+    return np.interp(freqs, f, 20.0 * np.log10(np.maximum(h, 1e-30)))
+
+
+def best_r_for_target(responses, resonances, reference_db):
+    """Pick the resonance whose measured curve best matches the reference.
+
+    responses: list of magnitude-dB arrays, one per entry of resonances.
+    Returns (best_r, rms_error_db, index).
+    """
+    best = None
+    for i, (r, curve) in enumerate(zip(resonances, responses)):
+        err = float(np.sqrt(np.mean((np.asarray(curve) - reference_db) ** 2)))
+        if best is None or err < best[1]:
+            best = (float(r), err, i)
+    return best
+
+
+def calibrate_resonance(model, runfilters, workdir, target_k=2.0, fc=1000.0, n=32768):
+    """Find the user-facing resonance that best matches the reference at target_k.
+
+    Sweeps r in [0,1] in 0.05 steps, drives the model with a unit impulse at
+    fc=subject fc, and keeps the r minimizing RMS dB error against the
+    reference. Returns (best_r, info). best_r is None when the model produced
+    no finite output at any resonance.
+    """
+    freqs = np.logspace(np.log10(20.0), np.log10(BAND_LIMIT_FRACTION * SAMPLE_RATE), 400)
+    ref = reference_magnitude_db(fc, target_k, freqs)
+    impulse = np.zeros(n)
+    impulse[0] = 1.0
+
+    resonances = [i / 20.0 for i in range(21)]
+    curves, used = [], []
+    for r in resonances:
+        y = run_model(model, impulse, fc, r, 0, runfilters, workdir)
+        if y is None:
+            continue
+        curves.append(measured_magnitude_db(y, freqs))
+        used.append(r)
+
+    if not curves:
+        return None, {"reason": "no finite output at any resonance"}
+
+    best_r, err, _ = best_r_for_target(curves, used, ref)
+    return best_r, {"rms_error_db": err, "n_points": len(used), "target_k": target_k}
