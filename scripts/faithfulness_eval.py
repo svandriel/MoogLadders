@@ -536,3 +536,103 @@ def calibrate_resonance(model, runfilters, workdir, target_k=2.0, fc=1000.0, n=3
 
     best_r, err, _ = best_r_for_target(curves, used, ref)
     return best_r, {"rms_error_db": err, "n_points": len(used), "target_k": target_k}
+
+
+def _cross_freq(freqs, db, target_db):
+    """Frequency where a monotonic curve crosses target_db, linearly interpolated."""
+    diff = np.asarray(db) - target_db
+    idx = np.where(np.diff(np.sign(diff)) != 0)[0]
+    if len(idx) == 0:
+        return float("nan")
+    i = int(idx[0])
+    d0, d1 = diff[i], diff[i + 1]
+    frac = 0.0 if d1 == d0 else float(d0) / (d0 - d1)
+    return float(freqs[i] + frac * (freqs[i + 1] - freqs[i]))
+
+
+def shape_metrics(measured_db, reference_db, freqs):
+    """Compare one magnitude curve against the reference.
+
+    Returns magnitude_rms_db_error, cutoff_3db_error_hz, cutoff_3db_error_cents,
+    passband_gain_error_db, stopband_slope_db_per_oct,
+    stopband_slope_error_db_per_oct, peak_gain_error_db, peak_freq_error_cents.
+    """
+    measured_db = np.asarray(measured_db, dtype=float)
+    reference_db = np.asarray(reference_db, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
+
+    rms = float(np.sqrt(np.mean((measured_db - reference_db) ** 2)))
+
+    f3m = _cross_freq(freqs, measured_db, -3.0)
+    f3r = _cross_freq(freqs, reference_db, -3.0)
+    cents = (
+        1200.0 * np.log2(f3m / f3r)
+        if (np.isfinite(f3m) and np.isfinite(f3r) and f3m > 0 and f3r > 0)
+        else float("nan")
+    )
+
+    pb = freqs <= f3r * 0.5
+    passband = (
+        float(np.median(measured_db[pb]) - np.median(reference_db[pb])) if pb.any()
+        else float("nan")
+    )
+
+    sb = freqs >= max(f3r, 1.0) * 4.0
+    if sb.sum() >= 3:
+        logf = np.log2(freqs[sb])
+        slope_m = float(np.polyfit(logf, measured_db[sb], 1)[0])
+        slope_r = float(np.polyfit(logf, reference_db[sb], 1)[0])
+    else:
+        slope_m = slope_r = float("nan")
+
+    peak_m = int(np.argmax(measured_db))
+    peak_r = int(np.argmax(reference_db))
+    peak_freq_cents = float(1200.0 * np.log2(freqs[peak_m] / freqs[peak_r]))
+
+    return {
+        "magnitude_rms_db_error": rms,
+        "cutoff_3db_error_hz": float(f3m - f3r),
+        "cutoff_3db_error_cents": float(cents),
+        "passband_gain_error_db": passband,
+        "stopband_slope_db_per_oct": float(slope_m),
+        "stopband_slope_error_db_per_oct": float(abs(slope_m - slope_r)),
+        "peak_gain_error_db": float(measured_db[peak_m] - reference_db[peak_r]),
+        "peak_freq_error_cents": peak_freq_cents,
+    }
+
+
+# metric name -> (best, worst, weight). Best=0 error maps to 1.0 in normalize_error.
+LINEAR_WEIGHTS = {
+    "magnitude_rms_db_error": (0.0, 6.0, 0.30),
+    "cutoff_3db_error_cents": (0.0, 400.0, 0.20),
+    "passband_gain_error_db": (0.0, 3.0, 0.15),
+    "stopband_slope_error_db_per_oct": (0.0, 12.0, 0.15),
+    "peak_gain_error_db": (0.0, 6.0, 0.12),
+    "peak_freq_error_cents": (0.0, 400.0, 0.08),
+}
+
+
+def normalize_error(value, best, worst):
+    """Map a raw error metric to 0..1 where best maps to 1.0 and worst to 0.0.
+
+    Non-finite values score 0.0 (a failed measurement is a failure, not a pass).
+    """
+    if not np.isfinite(value):
+        return 0.0
+    if value <= best:
+        return 1.0
+    if value >= worst:
+        return 0.0
+    return 1.0 - (value - best) / (worst - best)
+
+
+def score_linear(metrics, weights=LINEAR_WEIGHTS):
+    """Weighted 0..100 linear score. 100 means indistinguishable from the reference."""
+    total = 0.0
+    wsum = 0.0
+    for key, (best, worst, weight) in weights.items():
+        if key not in metrics:
+            continue
+        total += weight * normalize_error(metrics[key], best, worst)
+        wsum += weight
+    return 100.0 * total / wsum if wsum > 0.0 else 0.0

@@ -631,3 +631,59 @@ def test_measured_magnitude_interpolates_onto_log_freqs():
     assert d.shape == freqs.shape
     assert np.all(np.isfinite(d))
     assert d[0] == pytest.approx(0.0, abs=1e-6)
+
+
+def _real_reference():
+    freqs = np.logspace(1, np.log10(0.4 * 44100), 2000)
+    return freqs, fe.reference_magnitude_db(1000.0, 0.0, freqs)
+
+
+def test_shape_metrics_perfect_match_is_all_zero():
+    freqs, ref = _real_reference()
+    m = fe.shape_metrics(ref.copy(), ref, freqs)
+    assert m["magnitude_rms_db_error"] == pytest.approx(0.0, abs=1e-9)
+    assert m["cutoff_3db_error_cents"] == pytest.approx(0.0, abs=1e-6)
+    assert m["passband_gain_error_db"] == pytest.approx(0.0, abs=1e-9)
+    assert m["stopband_slope_error_db_per_oct"] == pytest.approx(0.0, abs=1e-6)
+    assert m["peak_gain_error_db"] == pytest.approx(0.0, abs=1e-9)
+    assert m["peak_freq_error_cents"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_shape_metrics_detect_1db_passband_lift():
+    freqs, ref = _real_reference()
+    m = fe.shape_metrics(ref + 1.0, ref, freqs)
+    assert m["passband_gain_error_db"] == pytest.approx(1.0, abs=0.05)
+    assert m["magnitude_rms_db_error"] > 0.0
+
+
+def test_shape_metrics_detect_2pole_disguised_as_4pole():
+    freqs = np.logspace(2, np.log10(0.4 * 44100), 3000)
+    ref = -24.0 * np.log2(freqs / 1000.0)
+    meas = -12.0 * np.log2(freqs / 1000.0)
+    m = fe.shape_metrics(meas, ref, freqs)
+    assert m["stopband_slope_error_db_per_oct"] == pytest.approx(12.0, rel=0.1)
+
+
+def test_linear_score_bounded_and_orders_correctly():
+    perfect = {
+        "magnitude_rms_db_error": 0.0, "cutoff_3db_error_cents": 0.0,
+        "passband_gain_error_db": 0.0, "stopband_slope_error_db_per_oct": 0.0,
+        "peak_gain_error_db": 0.0, "peak_freq_error_cents": 0.0,
+    }
+    bad = {
+        "magnitude_rms_db_error": 6.0, "cutoff_3db_error_cents": 400.0,
+        "passband_gain_error_db": 3.0, "stopband_slope_error_db_per_oct": 12.0,
+        "peak_gain_error_db": 4.0, "peak_freq_error_cents": 200.0,
+    }
+    assert fe.score_linear(perfect) == pytest.approx(100.0, abs=1e-6)
+    assert 0.0 <= fe.score_linear(bad) <= 100.0
+    assert fe.score_linear(perfect) > fe.score_linear(bad)
+
+
+def test_linear_score_handles_nonfinite_metric():
+    metrics = {
+        "magnitude_rms_db_error": float("nan"), "cutoff_3db_error_cents": 50.0,
+        "passband_gain_error_db": 1.0, "stopband_slope_error_db_per_oct": 4.0,
+        "peak_gain_error_db": 2.0, "peak_freq_error_cents": 100.0,
+    }
+    assert 0.0 <= fe.score_linear(metrics) <= 100.0
