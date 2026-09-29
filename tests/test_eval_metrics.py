@@ -366,3 +366,88 @@ def test_run_model_raises_when_the_binary_is_missing(tmp_path):
     """
     with pytest.raises(OSError):
         fe.run_model("Stilson", np.zeros(64), 1000.0, 0.0, 0, str(tmp_path / "nope"), str(tmp_path))
+
+
+def test_thd_recovers_a_known_second_harmonic():
+    """Fundamental plus a -20 dB H2 must read exactly 10.0 % THD.
+
+    THD is the ratio of summed harmonic power to fundamental power, so a single
+    H2 at amplitude ratio 0.1 gives sqrt(0.01) = 10.0 %.
+    """
+    fs = 44100
+    t = np.arange(88200) / fs
+    x = np.sin(2 * np.pi * 1000 * t) + 0.1 * np.sin(2 * np.pi * 2000 * t)
+    assert fe.thd_percent(x, fs) == pytest.approx(10.0, rel=1e-3)
+
+
+def test_thd_matches_hand_computed_harmonics():
+    fs = 44100
+    t = np.arange(88200) / fs
+    x = (
+        np.sin(2 * np.pi * 1000 * t)
+        + 0.1 * np.sin(2 * np.pi * 2000 * t)
+        + 0.05 * np.sin(2 * np.pi * 3000 * t)
+    )
+    expected = np.sqrt(0.1**2 + 0.05**2) * 100.0
+    assert fe.thd_percent(x, fs) == pytest.approx(expected, rel=1e-3)
+
+
+def test_thd_of_pure_sine_is_negligible():
+    fs = 44100
+    t = np.arange(88200) / fs
+    assert fe.thd_percent(np.sin(2 * np.pi * 1000 * t), fs) < 0.01
+
+
+def test_harmonic_ratio_db_reads_a_known_h2_and_rejects_the_absent_orders():
+    """A -20 dB H2 must read -20 dB, and an absent H3 must stay far below it.
+
+    thd_percent sums harmonics against each other; this is the per-harmonic
+    level a ranking shows, so it is the number that has to be right. The absent
+    orders are the other half of it: a projection that leaked would report a
+    level for a harmonic the signal does not contain.
+    """
+    fs = 44100
+    t = np.arange(88200) / fs
+    x = np.sin(2 * np.pi * 1000 * t) + 0.1 * np.sin(2 * np.pi * 2000 * t)
+    assert fe.harmonic_ratio_db(x, fs, 2) == pytest.approx(-20.0, rel=1e-6)
+    assert fe.harmonic_ratio_db(x, fs, 3) < -100.0
+
+
+def test_fundamental_freq_finds_the_tone():
+    fs = 44100
+    t = np.arange(88200) / fs
+    assert fe.fundamental_freq(np.sin(2 * np.pi * 1234 * t), fs) == pytest.approx(
+        1234.0, rel=1e-3
+    )
+
+
+def test_noise_floor_of_silence_is_as_low_as_possible():
+    assert fe.noise_floor_db(np.zeros(16384), 44100) < -300.0
+
+
+def test_thd_below_16bit_floor_survives_float32_but_not_pcm16(tmp_path):
+    """The exact bug that broke the old suite: a -100 dBFS tone must still show THD.
+
+    Round-tripping through 16-bit quantizes this away. Through float32 it
+    survives. This is the direct guard on why --float exists.
+
+    The level has to be sub-LSB in 16-bit for that contrast to exist at all. At
+    the -60 dBFS of 0.001 the fundamental is 32.8 LSB and the H2 is 3.3 LSB, and
+    16-bit resolves the harmonic: it reads 10.31 %, not less than the 10.0 % that
+    is really there. The floor only bites below 0.001/32768 per harmonic, so this
+    drives 1e-5, where the whole record truncates to zero and THD reads 0.0.
+    """
+    fs = 44100
+    t = np.arange(88200) / fs
+    x = 1e-5 * (
+        np.sin(2 * np.pi * 1000 * t) + 0.1 * np.sin(2 * np.pi * 2000 * t)
+    )
+    p32 = tmp_path / "a32.wav"
+    fe.write_wav(p32, x)
+    back32, _ = fe.read_wav(p32)
+    p16 = tmp_path / "a16.wav"
+    fe.write_wav(p16, x, int16=True)
+    back16, _ = fe.read_wav(p16)
+
+    assert fe.thd_percent(back32, fs) == pytest.approx(10.0, rel=0.02)
+    assert fe.thd_percent(back16, fs) < 5.0

@@ -291,3 +291,78 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir,
     if not np.all(np.isfinite(y)):
         return None
     return y
+
+
+def spectrum_db(x, fs):
+    """Return (freqs_hz, magnitude_db) from a Hann-windowed real FFT."""
+    x = np.asarray(x, dtype=np.float64)
+    if x.size < 16:
+        raise ValueError("signal too short for spectral analysis")
+    win = np.hanning(x.size)
+    mag = np.abs(np.fft.rfft(x * win))
+    freqs = np.fft.rfftfreq(x.size, 1.0 / fs)
+    return freqs, 20.0 * np.log10(np.maximum(mag, 1e-30))
+
+
+def noise_floor_db(x, fs):
+    """Median magnitude in dB of the Hann-windowed spectrum."""
+    _, db = spectrum_db(x, fs)
+    return float(np.median(db))
+
+
+def fundamental_freq(x, fs):
+    """Frequency of the largest spectral peak in the band, in Hz, ignoring DC.
+
+    The search covers the whole band rather than stopping below a fixed ceiling.
+    A sub-1 kHz ceiling cannot find the tones this harness measures, which sit
+    at and above 1 kHz: with the tone excluded, the largest remaining bin is the
+    low-frequency skirt the Hann window leaves behind, and every harmonic is then
+    read against a fundamental the signal does not contain. DC is excluded
+    because a DC offset is not a fundamental; a silent record has no peak, and
+    reports the first bin above DC, which thd_percent then rejects as zero.
+    """
+    freqs, db = spectrum_db(x, fs)
+    return float(freqs[1:][int(np.argmax(db[1:]))])
+
+
+def goertzel_amplitude(x, fs, freq):
+    """Amplitude of `freq` in x, by Goertzel, normalized so a unit sine reads 1.
+
+    Projects at the exact requested frequency rather than reading the nearest FFT
+    bin, so a signal that does not contain a whole number of periods does not
+    leak into the reading.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = x.size
+    k = 2.0 * np.pi * freq / fs
+    coeff = 2.0 * np.cos(k)
+    s1 = 0.0
+    s2 = 0.0
+    for sample in x:
+        s0 = sample + coeff * s1 - s2
+        s2 = s1
+        s1 = s0
+    real = s1 - s2 * np.cos(k)
+    imag = s2 * np.sin(k)
+    return float(2.0 * np.hypot(real, imag) / n)
+
+
+def harmonic_ratio_db(x, fs, order):
+    """Amplitude of harmonic `order` relative to the fundamental, in dB."""
+    f0 = fundamental_freq(x, fs)
+    fund = goertzel_amplitude(x, fs, f0)
+    harm = goertzel_amplitude(x, fs, order * f0)
+    return 20.0 * np.log10(max(harm / max(fund, 1e-30), 1e-30))
+
+
+def thd_percent(x, fs, orders=10):
+    """Total harmonic distortion in percent, harmonics 2 through `orders`."""
+    f0 = fundamental_freq(x, fs)
+    fund = goertzel_amplitude(x, fs, f0)
+    if fund <= 0.0:
+        return 0.0
+    power = 0.0
+    for order in range(2, orders + 1):
+        amp = goertzel_amplitude(x, fs, order * f0)
+        power += amp * amp
+    return 100.0 * np.sqrt(power) / fund
