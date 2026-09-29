@@ -865,12 +865,36 @@ RUNFILTERS_EXE = os.environ.get(
 )
 
 
+def _flag_reason(what, keys, total):
+    """One sentence naming every failed condition, for the record's flag_reason."""
+    return f"no finite output at {len(keys)} of {total} {what}: {', '.join(keys)}"
+
+
 def collect_linear(model, runfilters, workdir):
-    """Per-model linear set: calibrate resonance, sweep cutoffs, score shape."""
+    """Per-model linear set: calibrate resonance, sweep cutoffs, score shape.
+
+    Failed cases are named in `flagged` and the mean is taken over the survivors
+    anyway, so the partial number is still on the record as a diagnostic. The
+    flag is what removes the model from the ranking: a model that only answers at
+    three of six operating points has not been measured, and averaging the other
+    three into a score that looks like a measurement of the model is the failure
+    the design doc's robustness gate exists to prevent.
+    """
     r, cal = calibrate_resonance(model, runfilters, workdir)
-    out = {"requested": {}, "measured": {}, "linear_score": None, "score_parts": None}
+    out = {
+        "requested": {},
+        "measured": {},
+        "linear_score": None,
+        "score_parts": None,
+        "flagged": [],
+        "flag_reason": "",
+    }
     if r is None:
         out["reason"] = cal.get("reason")
+        # Non-finite output at all 21 calibration resonances is non-finite output
+        # on every condition, not an absence of a measurement.
+        out["flagged"] = ["calibrate_resonance"]
+        out["flag_reason"] = "no finite output at any of the 21 calibration resonances (calibrate_resonance)"
         return out
 
     freqs = np.logspace(np.log10(20.0), np.log10(BAND_LIMIT_FRACTION * SAMPLE_RATE), 800)
@@ -879,6 +903,7 @@ def collect_linear(model, runfilters, workdir):
     out["requested"]["oversamples"] = list(DEFAULT_OVERSAMPLES)
 
     metric_sets = []
+    failed = []
     impulse = np.zeros(IMPULSE_N)
     impulse[0] = 1.0
     for fc_ in DEFAULT_CUTOFFS:
@@ -886,7 +911,9 @@ def collect_linear(model, runfilters, workdir):
         for os in DEFAULT_OVERSAMPLES:
             y = run_model(model, impulse, fc_, r, os, runfilters, workdir)
             if y is None:
-                out["measured"][f"fc{fc_}_os{os}"] = {"error": "no finite output"}
+                key = f"fc{fc_}_os{os}"
+                out["measured"][key] = {"error": "no finite output"}
+                failed.append(key)
                 continue
             m = shape_metrics(measured_magnitude_db(y, freqs), ref, freqs)
             m["cutoff_hz"] = fc_
@@ -894,18 +921,33 @@ def collect_linear(model, runfilters, workdir):
             out["measured"][f"fc{fc_}_os{os}"] = m
             metric_sets.append(m)
 
+    if failed:
+        out["flagged"] = failed
+        out["flag_reason"] = _flag_reason(
+            "cases",
+            failed,
+            len(DEFAULT_CUTOFFS) * len(DEFAULT_OVERSAMPLES),
+        )
+
     if metric_sets:
-        agg = {
-            key: float(np.nanmean([m[key] for m in metric_sets]))
-            for key in (
-                "magnitude_rms_db_error",
-                "cutoff_3db_error_cents",
-                "passband_gain_error_db",
-                "stopband_slope_error_db_per_oct",
-                "peak_gain_error_db",
-                "peak_freq_error_cents",
-            )
-        }
+        agg = {}
+        counts = {}
+        for key in (
+            "magnitude_rms_db_error",
+            "cutoff_3db_error_cents",
+            "passband_gain_error_db",
+            "stopband_slope_error_db_per_oct",
+            "peak_gain_error_db",
+            "peak_freq_error_cents",
+        ):
+            values = [m[key] for m in metric_sets]
+            agg[key] = float(np.nanmean(values))
+            # How many cases each average actually stands on. At fc=5000 the
+            # reference's stopband window starts near 21.1 kHz, above the top of
+            # the grid, so the slope is unmeasurable there and the nanmean
+            # averages the other two cutoffs without saying so.
+            counts[key] = int(sum(1 for v in values if np.isfinite(v)))
+        agg["n_cases"] = counts
         out["score_parts"] = agg
         out["linear_score"] = score_linear(agg)
     return out
@@ -918,8 +960,12 @@ def collect_nonlinear(model, runfilters, workdir, oracle, r):
     reference at absolute k=2.0, so this runs model and oracle at the same
     absolute operating point. The signal is a hard-switched square-ish tone
     (via np.sign) so the comparison stresses the tanh stages.
+
+    Failed cases are named in `flagged` and scored over the survivors, as in
+    collect_linear: the diagnostic stays, the ranking entry does not.
     """
     results = {}
+    failed = []
     k_abs = 2.0
     for fc in DEFAULT_CUTOFFS:
         for level in LEVELS_DBFS:
@@ -932,11 +978,17 @@ def collect_nonlinear(model, runfilters, workdir, oracle, r):
                 key = f"fc{fc}_lvl{level}_os{os}"
                 if ym is None:
                     results[key] = {"error": "no finite output"}
+                    failed.append(key)
                     continue
                 results[key] = nonlinear_metrics(ym, yo, SAMPLE_RATE)
     cases = [v for v in results.values() if "error" not in v]
     total = float(np.mean([score_nonlinear(v) for v in cases])) if cases else None
-    return {"cases": results, "nonlinear_score": total}
+    out = {"cases": results, "nonlinear_score": total, "flagged": failed, "flag_reason": ""}
+    if failed:
+        out["flag_reason"] = _flag_reason(
+            "cases", failed, len(DEFAULT_CUTOFFS) * len(LEVELS_DBFS) * len(DEFAULT_OVERSAMPLES)
+        )
+    return out
 
 
 def _rms_db(x):
@@ -950,19 +1002,44 @@ def collect_selfoscillation(model, runfilters, workdir):
     The reference self-oscillates at absolute k=4. We do NOT claim any model's
     r maps to k=4; we document, per r in the top of each model's own range,
     whether the output tail stays above -60 dBFS long after the burst ends.
+
+    Only a measured tail above -60 dBFS counts as ringing. A run that diverges
+    has no tail to measure, so it is reported as not ringing and flagged
+    instead: recorded as ringing it was indistinguishable from a model that
+    genuinely oscillates, which is the one distinction this sweep exists to
+    draw. A model whose output is shorter than the burst gets neither verdict,
+    because no measurement was taken.
     """
     burst = 12000
     out = {}
+    flagged = []
     for r in SELFOSC_RESONANCES:
         t = np.arange(SWEEP_N) / SAMPLE_RATE
         x = np.where(t < burst / SAMPLE_RATE, 0.001 * np.sin(2 * np.pi * 500.0 * t), 0.0)
         y = run_model(model, x, DEFAULT_CUTOFFS[1], r, 0, runfilters, workdir)
         if y is None:
-            out[str(r)] = {"ringing": True, "tail_rms_db": None, "note": "model diverged"}
+            out[str(r)] = {
+                "ringing": False,
+                "tail_rms_db": None,
+                "note": "model diverged",
+                "flagged": True,
+            }
+            flagged.append(f"r{r:.2f}")
+            continue
+        if len(y) < burst:
+            out[str(r)] = {
+                "ringing": False,
+                "tail_rms_db": None,
+                "note": f"output shorter than burst (len {len(y)})",
+            }
             continue
         tail = y[burst:]
         db = _rms_db(tail)
         out[str(r)] = {"ringing": bool(db > -60.0), "tail_rms_db": db}
+    out["flagged"] = flagged
+    out["flag_reason"] = (
+        _flag_reason("resonances", flagged, len(SELFOSC_RESONANCES)) if flagged else ""
+    )
     return out
 
 
@@ -982,6 +1059,45 @@ def _git_head():
 def get_oracle():
     from reference import moog_ladder_oracle
     return moog_ladder_oracle
+
+
+def _record_path(metrics_dir, name):
+    """metrics/<name>.json, with a name that could escape the directory denied.
+
+    MODEL_NAMES needs no sanitizing, but a name off the command line does, and
+    this is the only place one reaches the filesystem: `../../x` would otherwise
+    write outside the run directory.
+    """
+    safe = str(name).replace(os.sep, "_").replace("/", "_").replace("\\", "_")
+    return Path(metrics_dir) / f"{safe}.json"
+
+
+def _write_record(path, envelope, record):
+    """Write one model's JSON. A failed write is reported, not raised.
+
+    The sweep is twelve independent measurements; losing one because its file
+    could not be created would turn a disk problem into a hole in the report.
+    """
+    try:
+        with open(path, "w") as fh:
+            json.dump({**envelope, **record}, fh, indent=2)
+    except OSError as exc:
+        return f"error writing {path.name}: {exc.__class__.__name__}: {exc}"
+    return ""
+
+
+def _flagged_keys(record):
+    """Every failed condition across the three collectors, deduplicated.
+
+    A collector that raised contributes nothing: its record is None, and the
+    exception behind it is already the model's status.
+    """
+    keys = set()
+    for section in ("linear", "nonlinear", "selfosc"):
+        part = record.get(section)
+        if isinstance(part, dict):
+            keys.update(part.get("flagged") or [])
+    return sorted(keys)
 
 
 def main(argv=None):
@@ -1006,8 +1122,30 @@ def main(argv=None):
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
-    names = MODEL_NAMES if args.models == "All" else [s.strip() for s in args.models.split(",")]
+    requested = MODEL_NAMES if args.models == "All" else [s.strip() for s in args.models.split(",")]
+    # An unknown name is not a model that diverges. Swept unchecked it produced
+    # 21 failed calibrations, a null resonance, and three self-oscillation runs
+    # all reporting "model diverged" for a filter that does not exist, under a
+    # status of ok. The good names in the same list still run.
+    unknown = [name for name in requested if name not in MODEL_NAMES]
+    names = [name for name in requested if name in MODEL_NAMES]
+
     oracle = get_oracle()
+    for name in unknown:
+        _write_record(
+            _record_path(metrics_dir, name),
+            ld,
+            {
+                "model": name,
+                "status": f"error: unknown model '{name}'",
+                "linear": None,
+                "nonlinear": None,
+                "selfosc": None,
+                "flagged": [],
+            },
+        )
+
+    write_errors = 0
     for name in names:
         record = {
             "model": name,
@@ -1015,6 +1153,7 @@ def main(argv=None):
             "linear": None,
             "nonlinear": None,
             "selfosc": None,
+            "flagged": [],
         }
         try:
             linear = collect_linear(name, RUNFILTERS_EXE, str(run_dir))
@@ -1025,9 +1164,20 @@ def main(argv=None):
             record["selfosc"] = collect_selfoscillation(name, RUNFILTERS_EXE, str(run_dir))
         except Exception as exc:
             record["status"] = f"error: {exc.__class__.__name__}: {exc}"
-        with open(metrics_dir / f"{name}.json", "w") as fh:
-            json.dump({**ld, **record}, fh, indent=2)
-    return 0
+        record["flagged"] = _flagged_keys(record)
+        # The gate: a model that produced non-finite output anywhere is named and
+        # taken out of the ranking rather than scored on what survived. A model
+        # whose collector raised outright keeps its error status, which is
+        # already an exclusion and says more than the flag would.
+        if record["flagged"] and record["status"] == "ok":
+            record["status"] = "flagged"
+        if _write_record(_record_path(metrics_dir, name), ld, record):
+            write_errors += 1
+
+    # Nonzero when the run did not do what it was asked to: a name that does not
+    # exist, or a record that could not be written. A shell caller that checks
+    # the exit code should not see success for a sweep that scored nothing.
+    return 1 if (unknown or write_errors) else 0
 
 
 if __name__ == "__main__":
