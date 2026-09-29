@@ -68,7 +68,8 @@ def test_sine_sweep_is_logarithmic():
 _STUB_WRITES_OUTPUT = (
     "a = sys.argv\n"
     "v = lambda f: a[a.index(f) + 1]\n"
-    "tag = f'Stilson_c{int(float(v('-c')))}_r{float(v('-r')):.2f}'\n"
+    # %.0f, the way BuildOutputFilename names the cutoff, not int().
+    "tag = f'Stilson_c{float(v('-c')):.0f}_r{float(v('-r')):.2f}'\n"
     "if int(v('-s')):\n"
     "    tag += f'_os{int(v('-s'))}x'\n"
     "d = Path(v('-o'))\n"
@@ -101,6 +102,13 @@ def _stub_runfilters(tmp_path, sleep=0.0, exit_code=0):
     return str(script)
 
 
+def _unfaded_sweep(n, fs, f0, f1, amplitude):
+    """sine_sweep without the tail fade, for tests that compare against it."""
+    t = np.arange(n) / float(fs)
+    k = np.log(f1 / f0)
+    return amplitude * np.sin(2.0 * np.pi * f0 * (np.exp(k * t) - 1.0) / k)
+
+
 def test_sine_sweep_fades_to_zero_at_the_end():
     """A raised cosine over the last 1024 samples, so the sweep does not just stop.
 
@@ -110,9 +118,7 @@ def test_sine_sweep_fades_to_zero_at_the_end():
     """
     n, fs, f0, f1 = 44100, 44100, 20.0, 20000.0
     x = fe.sine_sweep(n, fs, f0, f1, 0.5)
-    t = np.arange(n) / fs
-    k = np.log(f1 / f0)
-    unfaded = 0.5 * np.sin(2.0 * np.pi * f0 * (np.exp(k * t) - 1.0) / k)
+    unfaded = _unfaded_sweep(n, fs, f0, f1, 0.5)
 
     fade = 1024
     assert np.array_equal(x[:n - fade], unfaded[:n - fade])
@@ -126,13 +132,49 @@ def test_sine_sweep_fades_to_zero_at_the_end():
     assert np.allclose(env[loud], raised_cosine[loud], atol=1e-9)
 
 
-def test_sine_sweep_fade_does_not_change_the_frequency_content():
-    """The envelope is positive, so the zero crossings the sweep tests count are the same."""
+def test_sine_sweep_fade_does_not_change_the_zero_crossings():
+    """A positive envelope cannot move a zero crossing, so the two agree exactly.
+
+    The fade does change the final sample, from -0.16 to 0, but the sign change
+    still lands between the same pair of samples, so even the index array matches
+    and not just its length.
+    """
     n, fs = 44100, 44100
-    x = fe.sine_sweep(n, fs, 20.0, 20000.0, 0.5)
-    crossings = np.where(np.diff(np.sign(x)))[0]
+    faded = fe.sine_sweep(n, fs, 20.0, 20000.0, 0.5)
+    unfaded = _unfaded_sweep(n, fs, 20.0, 20000.0, 0.5)
+    crossings = np.where(np.diff(np.sign(faded)))[0]
+    assert np.array_equal(crossings, np.where(np.diff(np.sign(unfaded)))[0])
     assert len(crossings) > 10
-    assert np.max(np.abs(x)) <= 0.5 + 1e-9
+    assert np.max(np.abs(faded)) <= 0.5 + 1e-9
+
+
+def test_read_wav_rejects_a_data_chunk_shorter_than_it_declares(tmp_path):
+    """A truncated file must not be read as though the missing tail were silence."""
+    p = tmp_path / "short.wav"
+    fe.write_wav(p, np.zeros(64, dtype=np.float32))
+    p.write_bytes(p.read_bytes()[:-16])
+    with pytest.raises(ValueError):
+        fe.read_wav(p)
+    with pytest.raises(ValueError):
+        fe.read_wav_float(p)
+
+
+def test_run_model_resolves_a_cutoff_that_is_not_a_whole_number(tmp_path):
+    """RunFilters names output with %.0f, so the wrapper has to round, not floor.
+
+    At 1000.6 Hz the binary writes Stilson_c1001_..., and a wrapper that floored
+    would search a directory the binary never created.
+    """
+    stub = _stub_runfilters(tmp_path)
+    for cutoff, named in ((1000.6, "1001"), (1001.5, "1002"), (999.5, "1000")):
+        # A workdir per case: flooring 1001.5 gives 1001, which is the name the
+        # 1000.6 case already used.
+        workdir = tmp_path / f"c{named}"
+        tag = f"Stilson_c{named}_r0.50"
+        y = fe.run_model("Stilson", np.zeros(64), cutoff, 0.5, 0, stub, str(workdir))
+        assert y is not None, cutoff
+        assert (workdir / f"{tag}_out" / f"{tag}.wav").exists(), cutoff
+        assert not (workdir / f"Stilson_c{int(cutoff)}_r0.50_out").exists(), cutoff
 
 
 def test_step_is_zero_then_constant():

@@ -165,6 +165,10 @@ def _read_riff(path):
             )
             fmt = (tag, channels, fs, bits)
         elif chunk_id == b"data":
+            if len(body) != size:
+                raise ValueError(
+                    f"{path} declares a {size} byte data chunk but holds {len(body)}"
+                )
             data = body
             break
         at += 8 + size + (size & 1)
@@ -221,10 +225,11 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir,
     of FILTER_NAMES: RunFilters has no single-model mode, so a name that matches no
     file is a failed run rather than a different model.
 
-    Resonance is 0..1, which is what RunFilters takes and what the models map to
-    absolute feedback k = 4r, so the range is k in [0, 4]: the self-oscillation
-    threshold of a 4-pole ladder. A wider domain would not be more permissive in
-    practice, only quieter about it, since RunFilters exits 1 above 1.0.
+    Resonance is 0..1 because that is the domain RunFilters accepts and exits 1
+    outside of, and nothing deeper justifies it: the models map r to physical
+    feedback differently, Hyperion scaling by 4 and OberheimVariation expecting r
+    in 1..10 so that it runs negative on this domain. Task 12's resonance axis
+    should expose that per-model spread rather than assume it away.
 
     `timeout` bounds the invocation in seconds and a run that overruns it is
     treated as failed, like a nonzero exit. It is keyword-only so a test can use a
@@ -240,9 +245,14 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir,
         raise ValueError(f"resonance {resonance} must be in [0.0, 1.0]")
     if oversample not in SUPPORTED_OVERSAMPLES:
         raise ValueError(f"oversample {oversample} must be one of {SUPPORTED_OVERSAMPLES}")
+    # One rounding, used for the tag, the argument and the glob, because
+    # BuildOutputFilename names the cutoff with %.0f. Flooring it here would look
+    # for a directory the binary never created at 1000.6 Hz. Python and C both
+    # round halves to even, on a double and a float respectively.
+    fc = f"{cutoff:.0f}"
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    tag = f"{model}_c{int(cutoff)}_r{resonance:.2f}"
+    tag = f"{model}_c{fc}_r{resonance:.2f}"
     src = workdir / f"{tag}_in.wav"
     outdir = workdir / f"{tag}_out"
     # RunFilters does not create its output directory, so the harness does.
@@ -254,7 +264,7 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir,
             [
                 str(runfilters),
                 "-f", str(src),
-                "-c", str(int(cutoff)),
+                "-c", fc,
                 "-r", f"{resonance:.2f}",
                 "-s", str(oversample),
                 "-o", str(outdir),
@@ -269,7 +279,7 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir,
     if result.returncode != 0:
         return None
 
-    pattern = f"*_c{int(cutoff)}_r{resonance:.2f}"
+    pattern = f"*_c{fc}_r{resonance:.2f}"
     if oversample:
         pattern += f"_os{oversample}x"
     pattern += ".wav"
