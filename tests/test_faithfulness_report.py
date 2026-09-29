@@ -510,6 +510,54 @@ def test_appendix_states_what_was_not_measured(tmp_path):
         assert needle in appendix.lower(), needle
 
 
+def test_legacy_artifacts_match_the_legacy_records(tmp_path):
+    """The legacy-carried artifact sentences rest on numbers the records contain.
+
+    Those values are the ones a reader cannot check in this report (the legacy
+    run directory is gitignored, like this one), so wording drift there is
+    exactly what a regression test should catch: the card claims "dc_gain =
+    0.0000" and "settled … in 27 ms", and both have to be true of the step
+    records the sentence says they come from, or the claim is legible and
+    wrong.
+    """
+    records = fr.load_records(
+        REPO / "filter_validation" / "faithfulness" / "run1")
+    text = fr.render(records)
+    step = json.load(
+        open(REPO / "filter_validation" / "2026-09-28_201435" / "metrics"
+             / "step.json"))
+    by_name = {}
+    for row in step:
+        by_name.setdefault(row["filter_name"], []).append(
+            (row["resonance"], row["metrics"]))
+    stilson = dict(by_name["Stilson"])
+    assert all(d["dc_gain"] == 0.0 for d in stilson.values())
+    assert "dc_gain = 0.0000" in text
+    improved = dict(by_name["Improved"])
+    dc_at_zero = improved[0.0]["dc_gain"]
+    assert -1.001 < dc_at_zero < -0.999, dc_at_zero
+    legacy = dict(by_name["HyperionLegacy"])
+    settle_5 = legacy[0.5]["settling_time_ms"]
+    settle_9 = legacy[0.9]["settling_time_ms"]
+    settle_0 = legacy[0.0]["settling_time_ms"]
+    assert 741.0 < settle_5 < 744.0, settle_5
+    assert 741.0 < settle_9 < 744.0, settle_9
+    assert settle_0 < 50.0, settle_0  # r=0.00 settled promptly
+    card = _card_text(text, "HyperionLegacy")
+    assert "r=0.50" in card and "r=0.00" in card
+    assert "27" in card  # the prompt settle, from the records
+    music = dict(by_name["MusicDSP"])
+    never = music[0.9]["settling_time_ms"]
+    window = 32768 / fe.SAMPLE_RATE * 1000
+    assert abs(never - window) < 1.0, (never, window)  # record-length = never
+
+    # Truthfulness of the appendix's partial-case annotation.
+    parts = (records["OberheimVariation"].get("linear") or {}).get("score_parts")
+    n = (parts or {}).get("n_cases") or {}
+    assert n.get("cutoff_3db_error_cents", 6) < 6, "fixture regression"
+    assert "2 of 6 cases" in text
+
+
 def test_same_records_render_the_same_bytes(tmp_path):
     first, _recs, run, plots = _render(tmp_path / "a")
     recs2 = fr.load_records(run)

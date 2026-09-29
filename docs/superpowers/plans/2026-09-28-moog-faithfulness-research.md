@@ -2753,7 +2753,7 @@ empty fixture data); Task 14 regenerates them from the real end-to-end run.
 Done in Tasks 6/7 (`--float` landed in commit `afa8389`; the PCM16 regression
 tests live in `tests/test_runfilters_float.py`). Nothing left to build.
 
-- [ ] **Step 2: Run the full sweep
+- [x] **Step 2: Run the full sweep
 
 ```bash
 mkdir -p filter_validation/faithfulness
@@ -2775,7 +2775,10 @@ floor, consistent with the legacy-suite artifact `dc_gain=0.0000`), so it ranks
 last, not first. The report states the measured order; it does not assert a
 predicted order.
 
-- [ ] **Step 3: Implement the report writer
+Done (`filter_validation/faithfulness/run1/metrics/*.json`, reproduces
+`figs_all` byte-for-byte; all 12 `status == "ok"`).
+
+- [x] **Step 3: Implement the report writer
 
 `scripts/faithfulness_report.py` reads the JSON directory and emits
 `docs/moog-faithfulness-report.md`. It renders:
@@ -2794,7 +2797,7 @@ predicted order.
    errata, comparison port may be coincidentally matched, filter libraries may
    be mislabeled, legacy test did not measure the -3 dB point.
 
-- [ ] **Step 4: Assertion gate before writing
+- [x] **Step 4: Assertion gate before writing
 
 In the report script, before writing the final markdown, assert:
 
@@ -2802,18 +2805,19 @@ In the report script, before writing the final markdown, assert:
   is excluded from the ranking and its flag reason is stated instead,
 - the ranking table is non-empty,
 - at least one model rings (self-oscillation `ringing: True` exists, so the
-  self-oscillation risk is stated; HyperionLegacy does not ring and instead is
-  the one model the legacy suite found never settles, `742.27 ms` on a `743 ms`
-  window — the report says both facts),
+  self-oscillation risk is stated; HyperionLegacy does not ring in the faithful
+  run, and the legacy suite's step data shows it settles only in the last
+  millisecond of the 743 ms window at r=0.50 and r=0.90 — the report says both
+  facts),
 - `docs/moog-faithfulness/plots/*.png` exists (all six).
 
-- [ ] **Step 5: Generate and open the report
+- [x] **Step 5: Generate and open the report
 
 ```bash
 python scripts/faithfulness_report.py filter_validation/faithfulness/run1
 ```
 
-- [ ] **Step 6: Commit
+- [x] **Step 6: Commit
 
 ```bash
 git add scripts/faithfulness_report.py docs/moog-faithfulness-report.md && git commit -m "add end to end report generation"
@@ -2832,10 +2836,16 @@ approved, the design doc updated, and this remaining question removed.
 
 - [ ] **Step 2: Confirmed artifacts for the report
 
-Confirm in the report:
+Confirm in the report (values corrected during Task 14 review against
+`filter_validation/2026-09-28_201435/metrics/step.json`; the step suite swept
+fc=1000 only):
 
-- Stilson `dc_gain=0.0000`, Improved `dc_gain=-1.0000`,
-- HyperionLegacy step settling equal to signal length (742.27 ms),
+- Stilson `dc_gain=0.0000` at the step operating point (not "all three
+  cutoffs"), Improved `dc_gain=-0.99997` (inversion, shrinking across
+  resonance; not exactly -1.0000),
+- HyperionLegacy step settling 742.27 ms (r=0.50) / 742.77 ms (r=0.90), last
+  millisecond of the 743.04 ms window; it settles promptly (27 ms) at r=0.00.
+  MusicDSP alone (r=0.90, 743.04 ms = record length) never settles,
 - THD ordering at -6 dBFS floor: Stilson 0.0000 %, Huovilainen 0.0023 %.
 
 - [ ] **Step 3: Robustness grep

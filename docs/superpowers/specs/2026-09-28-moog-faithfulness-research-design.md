@@ -276,7 +276,10 @@ the oversampling base is shared.
 
 ## Report structure
 
-1. **Verdict.** Ranking table, both axes, one line per model on whether to ship it and for what.
+1. **Verdict.** Ranking table, both axes, one line per model on what the numbers say it is good
+   for (which axis to read for which use). No ship/no-ship recommendation: shipping a model
+   weighs faithfulness against CPU cost and the sound, neither of which this harness measures
+   (section out of scope), so the report states the measured case and leaves the call to the reader.
 2. **What faithful means here.** The two axes defined.
 3. **Methodology.** Reference, calibration, metrics, weights.
 4. **Results.** Linear ranking, nonlinear ranking, combined, side by side.

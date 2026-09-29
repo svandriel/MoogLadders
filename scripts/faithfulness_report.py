@@ -420,10 +420,22 @@ def _verdict(records, bars, total):
         f"{last[1]:.2f}. Its low rank is a measurement, not a mislabel, and the "
         f"per-model card below says which measurement.",
         "",
-        f"Every one of the {total} models in this repository is in the table, "
-        f"each on both axes. A model with a flagged condition is dropped from "
-        f"it rather than scored zero, and section 4.4 records what the gate did "
-        f"and why.",
+    ]
+    if len(bars) == total:
+        lines += [
+            f"Every one of the {total} models in this repository is in the "
+            "table, each on both axes. A model with a flagged condition is "
+            "dropped from it rather than scored zero, and section 4.4 records "
+            "what the gate did and why.",
+        ]
+    else:
+        excluded = total - len(bars)
+        lines += [
+            f"{len(bars)} of the {total} models in this repository are in the "
+            f"table; the {excluded} that were flagged are not scored, and "
+            "section 4.4 names them and says why.",
+        ]
+    lines += [
         "",
         fe.write_ranking_table([
             {"model": b[0], "linear": b[1], "nonlinear": b[2], "combined": b[3]}
@@ -545,13 +557,16 @@ def _methodology(records, bars):
         f"{', '.join(f'{lvl:g}' for lvl in fe.LEVELS_DBFS)} dBFS and the same "
         f"two oversampling settings.",
         "",
-        "**Signal path.** Every model is driven through `build/RunFilters "
-        "--float`, which writes 32-bit IEEE float WAVs. The default 16-bit PCM "
-        "path is byte-identical with the flag off, and the float path exists "
-        "because a 16-bit record quantizes a filter tail to the noise floor and "
-        "the self-oscillation test cannot see a tail below -96 dBFS in it. "
-        "RunFilters has no single-model mode, so each invocation processes all "
-        "twelve and the harness keeps the file whose name matches.",
+"**Signal path.** Every model is driven through `build/RunFilters "
+        "--float`, which writes 32-bit IEEE float WAVs; the flag only adds "
+        "that path, and the default 16-bit PCM output is unchanged (a "
+        "regression test pins it to PCM16). The float path exists because a "
+        "16-bit record quantizes or zeros every tail below about -90 dBFS "
+        "(one LSB: 20*log10(1/32768) = -90.3), which is not the floor of the "
+        "models' quietest tails, so the self-oscillation test would read -inf "
+        "where the model still rings. RunFilters has no single-model mode, so "
+        "each invocation processes all twelve and the harness keeps the file "
+        "whose name matches.",
         "",
         "**Robustness gate.** A model producing non-finite output on any "
         "condition is flagged, removed from the ranking, and reported with the "
@@ -983,6 +998,10 @@ def _reproduction(records):
         "`scripts/faithfulness_eval.py`. The figures are byte-identical to the "
         "committed PNGs when regenerated from the same records.",
         "",
+        "The run directory is gitignored; the numbers above are regenerable from "
+        "a fresh clone by building `RunFilters` and re-running the sweep, and "
+        "the committed report can then be diffed against the regenerated one.",
+        "",
     ]
 
 
@@ -1001,10 +1020,21 @@ def _appendix(records, rank):
         "|---|" + "---:|" * len(fe.LINEAR_WEIGHTS),
     ]
     order = [b[0] for b in rank.bars] if rank is not None else fe._ordered_names(records)
+    total = _n_linear_cases(next(iter(records.values())))
     for name in order:
         parts = (records[name].get("linear") or {}).get("score_parts") or {}
-        lines.append(f"| {name} | " + " | ".join(
-            _metric(parts.get(k), k) for k in fe.LINEAR_WEIGHTS) + " |")
+        counts = parts.get("n_cases") or {}
+        cells = []
+        for k in fe.LINEAR_WEIGHTS:
+            cell = _metric(parts.get(k), k)
+            have = counts.get(k, total)
+            if cell != "n/a" and have < total:
+                cell += f" ({have} of {total} cases)"
+            cells.append(cell)
+        lines.append(f"| {name} | " + " | ".join(cells) + " |")
+    lines += ["", f"\"(N of {total} cases)\" marks a mean that stands on fewer than all "
+                  "six measurements: the metric was unmeasurable at the rest, so its "
+                  "value is a weaker claim than the table's other cells."]
     lines += [
         "",
         "### 9.2 What was not measured, and why",
@@ -1051,6 +1081,10 @@ def _appendix(records, rank):
         "- A. Huovilainen, \"Non-linear digital implementation of the Moog "
         "ladder filter\", Proceedings of the Computer Music Conference, 2004, "
         "for the Huovilainen model.",
+        "- R. J. E. Daly, \"Moog VCF Analysis\", MSc project, University of "
+        "Edinburgh, 2012. Related prior comparison of ladder-filter "
+        "implementations; listed as prior work, not as a source of specific "
+        "values.",
         "",
         "The models' own provenance and licences are listed in `README.md`.",
         "",
@@ -1070,19 +1104,22 @@ def render(records, plots_dir=PLOTS_DIR):
     gate(records, plots_dir)
     bars = fe._score_bars(records)
     rank = Rankings.of(bars)
+    total = len(records)  # repository count, ranked or not
     lines = [
         "# Moog ladder model faithfulness",
         "",
-        f"All {rank.total} Moog ladder models in this repository, measured "
-        f"against two references and ranked on each. Every number in this "
-        f"document is read out of the per-model JSON written by "
-        f"`scripts/faithfulness_eval.py`; none of it is typed in by hand.",
+        f"All {total} Moog ladder models in this repository, measured "
+        f"against two references and ranked on each. Every measured number in "
+        f"this document is read out of the per-model JSON written by "
+        f"`scripts/faithfulness_eval.py`, or out of the JSON of the legacy "
+        f"2026-09-28 suite where a card says it is; none of it is typed in by "
+        f"hand.",
         "",
     ]
-    lines += _verdict(records, bars, rank.total)
+    lines += _verdict(records, bars, total)
     lines += _what_faithful_means()
     lines += _methodology(records, bars)
-    lines += _results(records, bars, rank, rank.total)
+    lines += _results(records, bars, rank, total)
     lines += _cards(records, rank)
     lines += _threats()
     lines += _figures(records, plots_dir)

@@ -1,6 +1,6 @@
 # Moog ladder model faithfulness
 
-All 12 Moog ladder models in this repository, measured against two references and ranked on each. Every number in this document is read out of the per-model JSON written by `scripts/faithfulness_eval.py`; none of it is typed in by hand.
+All 12 Moog ladder models in this repository, measured against two references and ranked on each. Every measured number in this document is read out of the per-model JSON written by `scripts/faithfulness_eval.py`, or out of the JSON of the legacy 2026-09-28 suite where a card says it is; none of it is typed in by hand.
 
 ## 1. Verdict
 
@@ -47,7 +47,7 @@ Two axes, scored separately, because they measure different things and the model
 
 **Nonlinear metrics**, on a hard-switched 440 Hz tone at absolute k=2 against the oracle, over 30 cases per model: spectral distance (RMS log-magnitude difference, dB, weight 0.35), time-domain NRMSE (weight 0.25), THD delta in dB (weight 0.25), and the correlation of the two H1..H10 profiles (weight 0.15). The harmonic profile and the THD are both read at the interpolated fundamental rather than at an FFT bin, because a bin centre projects an H2 up to 1.4 dB low and turns a 10 % THD into anything from 0.03 % to 10 %. Cases are cutoffs 100, 1000, 5000 Hz at levels -24, -18, -12, -6, -3 dBFS and the same two oversampling settings.
 
-**Signal path.** Every model is driven through `build/RunFilters --float`, which writes 32-bit IEEE float WAVs. The default 16-bit PCM path is byte-identical with the flag off, and the float path exists because a 16-bit record quantizes a filter tail to the noise floor and the self-oscillation test cannot see a tail below -96 dBFS in it. RunFilters has no single-model mode, so each invocation processes all twelve and the harness keeps the file whose name matches.
+**Signal path.** Every model is driven through `build/RunFilters --float`, which writes 32-bit IEEE float WAVs; the flag only adds that path, and the default 16-bit PCM output is unchanged (a regression test pins it to PCM16). The float path exists because a 16-bit record quantizes or zeros every tail below about -90 dBFS (one LSB: 20*log10(1/32768) = -90.3), which is not the floor of the models' quietest tails, so the self-oscillation test would read -inf where the model still rings. RunFilters has no single-model mode, so each invocation processes all twelve and the harness keeps the file whose name matches.
 
 **Robustness gate.** A model producing non-finite output on any condition is flagged, removed from the ranking, and reported with the offending parameters named. It is not silently scored zero. In this run: no model was flagged.
 
@@ -309,6 +309,8 @@ Environment, read from the `git_head` and `software` keys that every record in t
 
 `scripts/filter_verification.py` is not modified by any of this work: the legacy suite and the figures quoted in section 5 are read-only inputs to the report, and every measurement in it was taken by `scripts/faithfulness_eval.py`. The figures are byte-identical to the committed PNGs when regenerated from the same records.
 
+The run directory is gitignored; the numbers above are regenerable from a fresh clone by building `RunFilters` and re-running the sweep, and the committed report can then be diffed against the regenerated one.
+
 ## 9. Appendix
 
 ### 9.1 Every linear metric, per model
@@ -317,18 +319,20 @@ The six scored metrics as recorded, before they were mapped to a score. n/a is a
 
 | Model | RMS magnitude error (dB) | cutoff error (cents) | passband gain error (dB) | stopband slope error (dB/octave) | peak gain error (dB) | peak frequency error (cents) |
 |---|---:|---:|---:|---:|---:|---:|
-| HyperionTanh | 6.10 dB | 127.94 cents low | 3.54 dB low | 2.26 dB/octave | 3.26 dB high | 144.50 cents low |
-| Hyperion | 6.79 dB | 244.76 cents low | 3.90 dB low | 2.18 dB/octave | 1.63 dB high | 195.94 cents low |
-| Huovilainen | 9.09 dB | 218.63 cents low | 6.71 dB low | 4.49 dB/octave | 1.29 dB high | 220.43 cents low |
-| MusicDSP | 7.04 dB | 30.64 cents high | 4.02 dB low | 1.75 dB/octave | 10.33 dB high | 12.25 cents low |
-| OberheimVariation | 9.89 dB | 2899.68 cents low | 1.17 dB high | 1.66 dB/octave | 7.70 dB low | 6299.39 cents low |
-| Krajeski | 5.88 dB | 394.80 cents low | 1.97 dB low | 3.76 dB/octave | 1.70 dB high | 416.37 cents low |
-| Improved | 11.84 dB | n/a | 5.35 dB low | 2.13 dB/octave | 4.54 dB low | 842.53 cents low |
-| Microtracker | 9.20 dB | n/a | 5.93 dB low | 3.73 dB/octave | 2.50 dB low | 227.78 cents low |
-| HyperionLegacy | 10.32 dB | n/a | 5.75 dB low | 5.32 dB/octave | 1.53 dB low | 475.15 cents low |
-| RKSimulation | 8.86 dB | n/a | 2.64 dB low | 4.31 dB/octave | 5.56 dB low | 766.61 cents low |
-| Simplified | 12.09 dB | 871.27 cents low | 4.97 dB low | 8.85 dB/octave | 0.95 dB low | 688.23 cents low |
-| Stilson | 116.63 dB | 577.50 cents high | 90.22 dB low | 20.37 dB/octave | 5.85 dB high | 1851.61 cents low |
+| HyperionTanh | 6.10 dB | 127.94 cents low (3 of 6 cases) | 3.54 dB low | 2.26 dB/octave (4 of 6 cases) | 3.26 dB high | 144.50 cents low |
+| Hyperion | 6.79 dB | 244.76 cents low (3 of 6 cases) | 3.90 dB low | 2.18 dB/octave (4 of 6 cases) | 1.63 dB high | 195.94 cents low |
+| Huovilainen | 9.09 dB | 218.63 cents low (3 of 6 cases) | 6.71 dB low | 4.49 dB/octave (4 of 6 cases) | 1.29 dB high | 220.43 cents low |
+| MusicDSP | 7.04 dB | 30.64 cents high | 4.02 dB low | 1.75 dB/octave (4 of 6 cases) | 10.33 dB high | 12.25 cents low |
+| OberheimVariation | 9.89 dB | 2899.68 cents low (2 of 6 cases) | 1.17 dB high | 1.66 dB/octave (4 of 6 cases) | 7.70 dB low | 6299.39 cents low |
+| Krajeski | 5.88 dB | 394.80 cents low (3 of 6 cases) | 1.97 dB low | 3.76 dB/octave (4 of 6 cases) | 1.70 dB high | 416.37 cents low |
+| Improved | 11.84 dB | n/a | 5.35 dB low | 2.13 dB/octave (4 of 6 cases) | 4.54 dB low | 842.53 cents low |
+| Microtracker | 9.20 dB | n/a | 5.93 dB low | 3.73 dB/octave (4 of 6 cases) | 2.50 dB low | 227.78 cents low |
+| HyperionLegacy | 10.32 dB | n/a | 5.75 dB low | 5.32 dB/octave (4 of 6 cases) | 1.53 dB low | 475.15 cents low |
+| RKSimulation | 8.86 dB | n/a | 2.64 dB low | 4.31 dB/octave (4 of 6 cases) | 5.56 dB low | 766.61 cents low |
+| Simplified | 12.09 dB | 871.27 cents low (1 of 6 cases) | 4.97 dB low | 8.85 dB/octave (4 of 6 cases) | 0.95 dB low | 688.23 cents low |
+| Stilson | 116.63 dB | 577.50 cents high (5 of 6 cases) | 90.22 dB low | 20.37 dB/octave (4 of 6 cases) | 5.85 dB high | 1851.61 cents low |
+
+"(N of 6 cases)" marks a mean that stands on fewer than all six measurements: the metric was unmeasurable at the rest, so its value is a weaker claim than the table's other cells.
 
 ### 9.2 What was not measured, and why
 
@@ -345,5 +349,6 @@ The six scored metrics as recorded, before they were mapped to a score. n/a is a
 - S. D'Angelo and V. Valimaki, "Generalized Moog Ladder Filter: Part II - Explicit Nonlinear Model through a Novel Delay-Free Implementation Method", IEEE/ACM TASLP 22(12), 1873-1883, 2014. DOI 10.1109/TASLP.2014.2352556. The source of `reference/moog_ladder_oracle.py`.
 - P. D. Zolzer and F. Vranken (eds), DAFX-DAFX02, 2nd edition, 2002, for the Moog~ model named in StilsonModel.h, after P. Stilson and J. O. Smith, "Using Algorithms to Synthesize Polyphonic Programmable Filters", Computer Music Journal 20(2), 1996.
 - A. Huovilainen, "Non-linear digital implementation of the Moog ladder filter", Proceedings of the Computer Music Conference, 2004, for the Huovilainen model.
+- R. J. E. Daly, "Moog VCF Analysis", MSc project, University of Edinburgh, 2012. Related prior comparison of ladder-filter implementations; listed as prior work, not as a source of specific values.
 
 The models' own provenance and licences are listed in `README.md`.
