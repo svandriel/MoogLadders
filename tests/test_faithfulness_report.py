@@ -563,6 +563,30 @@ def test_legacy_artifacts_match_the_legacy_records(tmp_path):
     window = 32768 / fe.SAMPLE_RATE * 1000
     assert abs(never - window) < 1.0, (never, window)  # record-length = never
 
+    # The legacy THD artifact is the same kind of claim: a number a reader
+    # cannot check in this report, quoted from a suite that measured it at a
+    # cutoff this report never runs at.
+    thd = json.load(
+        open(REPO / "filter_validation" / "2026-09-28_201435" / "metrics"
+             / "thd.json"))
+    legacy_thd = {(r["filter_name"], r["metrics"]["input_level_dbfs"]):
+                  r["metrics"] for r in thd}
+    floor = legacy_thd[("Stilson", -6)]
+    assert floor["thd_percent"] == 0.0
+    assert all(h <= -239.0 for h in floor["harmonics_db"]), floor["harmonics_db"]
+    huovilainen = legacy_thd[("Huovilainen", -6)]["thd_percent"]
+    assert 0.0023 < huovilainen < 0.0024, huovilainen
+    stilson_card = _card_text(text, "Stilson")
+    assert "fc=5000" in stilson_card, (
+        "the legacy cutoff has to travel with the legacy number, or the card "
+        "reads as contradicting section 4.3's fc=1000 column")
+    assert "0.0000 %" in stilson_card
+    # And the figure the card contrasts it with is section 4.3's own, read out
+    # of the record rather than typed in beside it.
+    faithful = fe._num(fe._case(records["Stilson"], fe.ORACLE_CASE)
+                       ["thd_model_percent"])
+    assert f"reads {faithful:.2f} %" in stilson_card, faithful
+
     # Truthfulness of the appendix's partial-case annotation.
     parts = (records["OberheimVariation"].get("linear") or {}).get("score_parts")
     n = (parts or {}).get("n_cases") or {}

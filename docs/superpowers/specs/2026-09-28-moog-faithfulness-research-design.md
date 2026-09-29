@@ -357,3 +357,21 @@ Reference validated three ways, including the K=4 identity. Evaluation code reco
 from synthetic signals. All 12 models scored on both axes, with robustness failures named rather
 than hidden. Report written with the threats to validity section intact, six committed figures,
 captions stating operating points, and exact reproduction commands.
+
+## Completion
+
+The report is `docs/moog-faithfulness-report.md`, generated from the gitignored run directory
+`filter_validation/faithfulness/run1` by `scripts/faithfulness_report.py`, and released as the
+annotated tag `moog-faithfulness-v1`.
+
+- **Six figures, reconciled.** The committed set under `docs/moog-faithfulness/plots/` is exactly
+  the six rows of the figure table above, F1..F6, each referenced once by the report. No seventh
+  figure was added; the table was not revised to accommodate one.
+- **Artifact set confirmed.** The four legacy-carried card facts stand against
+  `filter_validation/2026-09-28_201435/metrics/`: Stilson's `dc_gain = 0.0000` and Improved's
+  `-0.99997` at the step suite's operating point, HyperionLegacy settling only in the last
+  millisecond of the 743 ms window with MusicDSP never settling inside it, and the THD ordering at
+  the legacy sweep's -6 dBFS floor (Stilson 0.0000 %, Huovilainen 0.0023 %). Each carries the
+  operating point its suite measured it at, so a legacy number cannot be read as contradicting a
+  section 4.3 figure taken at a different cutoff.
+

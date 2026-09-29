@@ -62,6 +62,12 @@ FIGURE_SPECS: Tuple[FigureSpec, ...] = (
 # state it once.
 NONLINEAR_K = 2.0
 
+# The cutoff the nonlinear comparison case (section 4.3's THD column) was run
+# at, read out of the case key rather than written beside it: a constant that
+# could disagree with the case it describes is a claim about a measurement
+# nobody took.
+ORACLE_FC = float(fe.ORACLE_CASE.split("_", 1)[0][len("fc"):])
+
 # The operating points the sweep fixed, spelled out for the methodology section
 # so the numbers in the records and the numbers in the prose cannot disagree.
 METHOD_POINTS = (
@@ -220,8 +226,8 @@ LINEAR_SIGNED = frozenset({
 })
 LINEAR_DIRECTION = {"low": "low", "high": "high"}
 
-# Facts carried over from the 2026-09-28 legacy run
-# (scripts/filter_verification.py, filter_validation/<run>/metrics/step.json).
+# Facts carried over from the 2026-09-28 legacy run (scripts/
+# filter_verification.py, filter_validation/<run>/metrics/{step,thd}.json).
 # The legacy step suite swept fc=1000 only, at resonances 0.0/0.5/0.9, so every
 # claim below is scoped to what was measured there (Stilson returned dc_gain
 # 0.0000 and Improved -0.99997 at every resonance swept; Improved's gain stays
@@ -229,24 +235,49 @@ LINEAR_DIRECTION = {"low": "low", "high": "high"}
 # measurements of this harness: this sweep drives impulses and tones, not a
 # step, so it has no dc_gain to report. They are quoted as what that suite
 # found, and where this run sees the same defect the card says so.
+#
+# The legacy THD suite is a different sweep and a different set of numbers: it
+# ran fc=5000 at r=0.0 over -18/-12/-6 dBFS, and read its THD from binned FFT
+# bins rather than at the interpolated fundamental this harness uses. Its
+# figures are stated with that operating point attached, because a legacy THD
+# number quoted without one reads as if it contradicted section 4.3, which is a
+# different measurement at fc=1000.
+#
+# Each entry is (what that suite found, what this sweep cannot say about it):
+# the closing half is per fact, not per model, because a step measurement and
+# a THD measurement are confirmed by different evidence, or by none at all.
 LEGACY_ARTIFACTS = {
     "Stilson": (
-        "The legacy suite reported `dc_gain = 0.0000` at its step operating "
-        "point, emitting literal zeros to a step."
+        ("The legacy suite reported `dc_gain = 0.0000` at its step operating "
+         "point, emitting literal zeros to a step.",
+         "This sweep drives impulses and tones, not a step, so it has no "
+         "`dc_gain` of its own with which to confirm or contradict that."),
+        ("In that suite's THD sweep, at its -6 dBFS input level (fc=5000, "
+         "r=0.00) this model reported THD 0.0000 %, with all five of its "
+         "harmonics sitting at -240.0 dB, the sentinel that suite writes for "
+         "digital silence: the figure is the sentinel rather than a "
+         "measurement of low distortion. Huovilainen read 0.0023 % "
+         "(0.002342 % stored) at the same level, which is the ordering at that "
+         "floor.",
+         "{faithful_thd}"),
     ),
     "Improved": (
-        "The legacy suite reported `dc_gain = -0.99997` (approximately -1) at "
-        "its step operating point, inverting the step instead of low-passing "
-        "it; the inversion persists across resonance, shrinking in magnitude."
+        ("The legacy suite reported `dc_gain = -0.99997` (approximately -1) at "
+         "its step operating point, inverting the step instead of low-passing "
+         "it; the inversion persists across resonance, shrinking in magnitude.",
+         "This sweep drives impulses and tones, not a step, so it has no "
+         "`dc_gain` of its own with which to confirm or contradict that."),
     ),
     "HyperionLegacy": (
-        "The legacy suite's step record is 743.04 ms long and this model's "
-        "output did not enter the 2 % band until 742.27 ms at r=0.50 and "
-        "742.77 ms at r=0.90 - it settled only in the last millisecond of "
-        "the window at those two resonances. (At r=0.00 it settled promptly, "
-        "in 27 ms.) MusicDSP at r=0.90 reports 743.04 ms, which is the record "
-        "length: the metric's way of saying it never settled inside the "
-        "window at all."
+        ("The legacy suite's step record is 743.04 ms long and this model's "
+         "output did not enter the 2 % band until 742.27 ms at r=0.50 and "
+         "742.77 ms at r=0.90 - it settled only in the last millisecond of "
+         "the window at those two resonances. (At r=0.00 it settled promptly, "
+         "in 27 ms.) MusicDSP at r=0.90 reports 743.04 ms, which is the record "
+         "length: the metric's way of saying it never settled inside the "
+         "window at all.",
+         "This sweep drives impulses and tones, not a step, so it has no "
+         "`dc_gain` of its own with which to confirm or contradict that."),
     ),
 }
 
@@ -847,15 +878,39 @@ def _card(name, rec, rank, rings):
                 f" so this run did not observe it oscillating at the top of its "
                 f"own resonance range.")
 
-    artifact = LEGACY_ARTIFACTS.get(name)
-    if artifact:
-        lines.append(
-            f"Known artifact, carried from the 2026-09-28 legacy suite rather "
-            f"than measured here: {artifact} This sweep drives impulses and "
-            f"tones, not a step, so it has no `dc_gain` of its own with which to "
-            f"confirm or contradict that.")
+    artifacts = LEGACY_ARTIFACTS.get(name)
+    if artifacts:
+        faithful_thd = _faithful_thd_clause(rec)
+        for fact, closing in artifacts:
+            lines.append(
+                f"Known artifact, carried from the 2026-09-28 legacy suite "
+                f"rather than measured here: {fact} "
+                f"{closing.format(faithful_thd=faithful_thd)}")
     lines.append("")
     return lines
+
+
+def _faithful_thd_clause(rec):
+    """How this run's own THD reading sits beside a legacy one for the same model.
+
+    The legacy suite's THD sweep ran at fc=5000 and this one at fc=1000, and it
+    read the figure from binned FFT bins where this harness reads the
+    interpolated fundamental. The two numbers are not the same measurement, so
+    the clause that keeps a legacy card from reading as a contradiction has to
+    name this run's own figure: a reader holding "0.0000 %" in one hand and
+    section 4.3's column in the other needs to be told which is which, and told
+    it in numbers rather than in a disclaimer. When the model has no figure at
+    that operating point the comparison is dropped rather than filled in.
+    """
+    case = fe._case(rec, fe.ORACLE_CASE) or {}
+    value = fe._num(case.get("thd_model_percent"))
+    clause = ("Section 4.3's THD column is a different sweep, at "
+              f"fc={ORACLE_FC:g} on this harness rather than fc=5000 on that "
+              "one")
+    if value is None:
+        return f"{clause}, so the two figures are not comparable."
+    return (f"{clause}, where this model reads {value:.2f} %, so the two "
+            "figures are not comparable.")
 
 
 def _selfosc_readings(rec):
@@ -920,9 +975,11 @@ def _threats():
         "- **The legacy test did not measure the -3 dB point.** The 2026-09-28 "
         "suite swept cutoff and read the response at the requested frequency, "
         "not at the point where the cascade is down 3 dB, so its cutoff "
-        "rejections are not evidence about these models. The step artifacts "
-        "quoted in section 5 are from that suite and are the only facts carried "
-        "over from it.",
+        "rejections are not evidence about these models. The step and THD "
+        "artifacts quoted in section 5 are from that suite and are the only "
+        "facts carried over from it, and each names the operating point that "
+        "suite measured it at: its THD sweep ran at fc=5000, not the fc=1000 "
+        "of section 4.3.",
         "- **The score scales are choices.** Each metric maps an error to 0..1 "
         "over a hand-chosen best and worst, and the weights are hand-chosen too. "
         "A different reasonable set reorders the middle of the table. The two "
