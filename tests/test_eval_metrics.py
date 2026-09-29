@@ -654,6 +654,58 @@ def test_shape_metrics_detect_1db_passband_lift():
     m = fe.shape_metrics(ref + 1.0, ref, freqs)
     assert m["passband_gain_error_db"] == pytest.approx(1.0, abs=0.05)
     assert m["magnitude_rms_db_error"] > 0.0
+    # Pins the scale of the RMS: a sum of squares instead of a mean of squares
+    # would read 2000 and a missing sqrt would read 44.7.
+    assert m["magnitude_rms_db_error"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_cross_freq_selects_the_falling_cutoff_at_the_pipeline_operating_point():
+    # Task 12 scores the pipeline at k=2, and a resonant ladder crosses -3 dB
+    # twice: once rising up the skirt, because the DC gain is 1/(1+k) = -9.54 dB
+    # and the peak only reaches -1.74 dB, and once falling past the real cutoff.
+    # Only the falling one is the cutoff.
+    freqs = np.logspace(1, np.log10(0.4 * 44100), 2000)
+    ref = fe.reference_magnitude_db(1000.0, 2.0, freqs)
+    assert ref[0] < -3.0 < ref.max()
+    assert fe._cross_freq(freqs, ref, -3.0) == pytest.approx(1055.5, abs=10.0)
+    m = fe.shape_metrics(ref.copy(), ref, freqs)
+    assert m["cutoff_3db_error_cents"] == pytest.approx(0.0, abs=1e-6)
+    assert np.isfinite(m["passband_gain_error_db"])
+
+
+def test_cross_freq_rejects_a_curve_starting_exactly_on_the_target():
+    # Landing on the target at the first bin is not a crossing: there is no
+    # approach from one side, so the only honest answer is that the curve was
+    # already there.
+    freqs = np.logspace(1, 3, 200)
+    db = -3.0 - np.log2(freqs / freqs[0])
+    assert db[0] == pytest.approx(-3.0)
+    assert np.all(np.diff(db) < 0.0)
+    assert np.isnan(fe._cross_freq(freqs, db, -3.0))
+
+
+def test_shape_metrics_passband_stays_finite_at_a_low_cutoff_with_resonance():
+    # The passband window is half the cutoff, so a cutoff read low enough puts
+    # the window below the measured band and the median has nothing to read.
+    freqs = np.logspace(np.log10(50.0), np.log10(0.4 * 44100), 2000)
+    ref = fe.reference_magnitude_db(100.0, 2.0, freqs)
+    m = fe.shape_metrics(ref.copy(), ref, freqs)
+    assert np.isfinite(m["passband_gain_error_db"])
+    assert m["passband_gain_error_db"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_shape_metrics_charges_a_flat_model_for_the_missing_resonant_peak():
+    # A flat model's band maximum is its DC gain, so a plain argmax reads the
+    # missing peak as a near-perfect one. The peak has to be measured above the
+    # passband, the way the reference-peak test does it.
+    freqs = np.logspace(1, np.log10(0.4 * 44100), 2000)
+    ref = fe.reference_magnitude_db(1000.0, 2.0, freqs)
+    hump = float((ref - ref[0]).max())
+    assert hump > 6.0
+    m = fe.shape_metrics(np.zeros_like(ref), ref, freqs)
+    assert m["peak_gain_error_db"] == pytest.approx(-hump, abs=0.05)
+    best, worst, _ = fe.LINEAR_WEIGHTS["peak_gain_error_db"]
+    assert fe.normalize_error(m["peak_gain_error_db"], best, worst) == 0.0
 
 
 def test_shape_metrics_detect_2pole_disguised_as_4pole():
@@ -687,3 +739,24 @@ def test_linear_score_handles_nonfinite_metric():
         "peak_gain_error_db": 2.0, "peak_freq_error_cents": 100.0,
     }
     assert 0.0 <= fe.score_linear(metrics) <= 100.0
+    # A failed measurement is a failure, not a pass: a NaN on the heaviest axis
+    # has to score strictly below a clean 0.0 there, or the bound above is the
+    # only thing being tested.
+    clean = dict(metrics, magnitude_rms_db_error=0.0)
+    assert fe.score_linear(metrics) < fe.score_linear(clean)
+
+
+def test_linear_score_treats_signed_errors_symmetrically():
+    def with_cents(value):
+        return {
+            "magnitude_rms_db_error": 0.0, "cutoff_3db_error_cents": value,
+            "passband_gain_error_db": 0.0, "stopband_slope_error_db_per_oct": 0.0,
+            "peak_gain_error_db": 0.0, "peak_freq_error_cents": 0.0,
+        }
+
+    # A model 400 cents LOW is exactly as wrong as one 400 cents HIGH, and a
+    # one-sided clamp scored both as perfect.
+    assert fe.score_linear(with_cents(-400.0)) == pytest.approx(
+        fe.score_linear(with_cents(400.0))
+    )
+    assert fe.score_linear(with_cents(-50.0)) > fe.score_linear(with_cents(-400.0))

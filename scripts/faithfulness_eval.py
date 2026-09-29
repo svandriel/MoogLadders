@@ -539,12 +539,36 @@ def calibrate_resonance(model, runfilters, workdir, target_k=2.0, fc=1000.0, n=3
 
 
 def _cross_freq(freqs, db, target_db):
-    """Frequency where a monotonic curve crosses target_db, linearly interpolated."""
+    """Frequency where the curve falls through target_db, linearly interpolated.
+
+    The *falling* crossing, and the last one, not the first crossing of any
+    kind. A resonant ladder rises through the target on its way up the skirt and
+    falls through it on its way down past the cutoff, so at the operating point
+    this harness scores (k=2, fc=1000) the -3 dB level is crossed twice: at
+    835 Hz on the way up, and at 1055 Hz on the way down. Only the second is the
+    cutoff, and the first is not merely a worse answer -- it sits on the
+    resonant skirt, where the curve is still climbing, so every window derived
+    from it (passband, stopband) is anchored to the wrong place in the band.
+
+    The rising crossing is skipped rather than measured and discarded because
+    whether a curve has one depends on where the band starts: the same response
+    read over a band that already sits above the target has no rising crossing
+    to skip, and a search that had already committed to the first one would
+    report a different cutoff for the same filter.
+
+    Index 0 is not a crossing. diff[0] >= 0 and diff[1] < 0 is how a curve that
+    *starts* exactly on the target looks to a sign test, and there is no
+    approach from above to interpolate, so a curve that lands on the target at
+    the first bin reports no crossing at all rather than a fabricated one.
+
+    A curve that never falls through the target reports NaN.
+    """
     diff = np.asarray(db) - target_db
-    idx = np.where(np.diff(np.sign(diff)) != 0)[0]
-    if len(idx) == 0:
+    falling = np.where((diff[:-1] >= 0.0) & (diff[1:] < 0.0))[0]
+    falling = falling[falling >= 1]
+    if len(falling) == 0:
         return float("nan")
-    i = int(idx[0])
+    i = int(falling[-1])
     d0, d1 = diff[i], diff[i + 1]
     frac = 0.0 if d1 == d0 else float(d0) / (d0 - d1)
     return float(freqs[i] + frac * (freqs[i + 1] - freqs[i]))
@@ -556,6 +580,23 @@ def shape_metrics(measured_db, reference_db, freqs):
     Returns magnitude_rms_db_error, cutoff_3db_error_hz, cutoff_3db_error_cents,
     passband_gain_error_db, stopband_slope_db_per_oct,
     stopband_slope_error_db_per_oct, peak_gain_error_db, peak_freq_error_cents.
+
+    The peak is measured *above the passband*, as the largest value of
+    `curve - curve[0]`, not as the band argmax. The two differ wherever the
+    response is not already peaked at DC, which is to say for every resonant
+    setting: the reference at k=2 has a DC gain of -9.54 dB and a peak of
+    -1.74 dB, so the band argmax is the peak only by luck of the numbers, while
+    a model with no resonance at all reports a flat curve whose argmax is its DC
+    gain. Scored on the argmax such a model reads 1.74 dB of peak error where
+    the honest answer is the full 7.80 dB hump it is missing, and it collects
+    most of the peak credit it did not earn. Referencing the hump to the first
+    bin measures the hump itself, so a curve that has no hump is charged for
+    the reference's, in either direction.
+
+    Errors that cannot be measured are NaN rather than zero: a curve that never
+    crosses -3 dB has no cutoff to report, and reporting 0 there would let a
+    model that failed to roll off score as a perfect match on three axes.
+    score_linear scores a NaN as 0.0, so a missing measurement is a failure.
     """
     measured_db = np.asarray(measured_db, dtype=float)
     reference_db = np.asarray(reference_db, dtype=float)
@@ -585,8 +626,10 @@ def shape_metrics(measured_db, reference_db, freqs):
     else:
         slope_m = slope_r = float("nan")
 
-    peak_m = int(np.argmax(measured_db))
-    peak_r = int(np.argmax(reference_db))
+    hump_m = measured_db - measured_db[0]
+    hump_r = reference_db - reference_db[0]
+    peak_m = int(np.argmax(hump_m))
+    peak_r = int(np.argmax(hump_r))
     peak_freq_cents = float(1200.0 * np.log2(freqs[peak_m] / freqs[peak_r]))
 
     return {
@@ -596,7 +639,7 @@ def shape_metrics(measured_db, reference_db, freqs):
         "passband_gain_error_db": passband,
         "stopband_slope_db_per_oct": float(slope_m),
         "stopband_slope_error_db_per_oct": float(abs(slope_m - slope_r)),
-        "peak_gain_error_db": float(measured_db[peak_m] - reference_db[peak_r]),
+        "peak_gain_error_db": float(hump_m[peak_m] - hump_r[peak_r]),
         "peak_freq_error_cents": peak_freq_cents,
     }
 
@@ -615,10 +658,27 @@ LINEAR_WEIGHTS = {
 def normalize_error(value, best, worst):
     """Map a raw error metric to 0..1 where best maps to 1.0 and worst to 0.0.
 
+    The value is taken in magnitude. Four of the six scored metrics are signed
+    -- cutoff_3db_error_cents, passband_gain_error_db, peak_gain_error_db and
+    peak_freq_error_cents can each come out either way, because a model can run
+    its cutoff low or its peak high and both are equally wrong. Clamping only
+    the upper side, as this did, therefore scored every "too low" model as
+    perfect: `value <= best` is true for every negative number, so a cutoff
+    2000 cents LOW kept the full 0.20 of the cutoff weight, and a peak 6 dB
+    LOW kept 0.12, on top of the passband's 0.15 and the peak frequency's 0.08.
+    That is 0.55 of the weight handed out for being wrong in one direction
+    only.
+
+    Taking the magnitude here rather than in shape_metrics is deliberate: the
+    metric values themselves stay signed in the metrics dict, because a report
+    that says "the cutoff was 200 cents LOW" is worth more than one that says
+    "200", and only the score is direction-blind.
+
     Non-finite values score 0.0 (a failed measurement is a failure, not a pass).
     """
     if not np.isfinite(value):
         return 0.0
+    value = abs(float(value))
     if value <= best:
         return 1.0
     if value >= worst:
