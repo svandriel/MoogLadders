@@ -41,6 +41,12 @@ SAMPLE_RATE = 44100
 BAND_LIMIT_FRACTION = 0.4
 ORDER = 4
 
+# Length of the raised-cosine fade at the end of a sine_sweep, in samples.
+SWEEP_FADE_N = 1024
+
+# RunFilters' own domain, from the -s check in example/run-filters.cpp:230.
+SUPPORTED_OVERSAMPLES = (0, 2, 4, 8)
+
 FILTER_NAMES: List[str] = [
     "Stilson",
     "Simplified",
@@ -71,11 +77,23 @@ def _get_pyplot():
 
 
 def sine_sweep(n, fs, f0, f1, amplitude):
-    """Logarithmic sine sweep from f0 to f1 over n samples."""
+    """Logarithmic sine sweep from f0 to f1 over n samples, faded out at the end.
+
+    The last SWEEP_FADE_N samples are scaled by a raised cosine running 1 -> 0, so
+    the signal does not stop on a step from whatever phase it happened to reach.
+    That step is a broadband transient, and the windowed FFT and THD measured
+    downstream of this signal would read it as filter content. The envelope is
+    positive, so the zero crossings the sweep tests count are unaffected.
+    """
     t = np.arange(n) / float(fs)
     k = np.log(f1 / f0)
     phase = 2.0 * np.pi * f0 * (np.exp(k * t) - 1.0) / k
-    return amplitude * np.sin(phase)
+    x = amplitude * np.sin(phase)
+    fade = min(SWEEP_FADE_N, n)
+    if fade > 1:
+        ramp = 0.5 * (1.0 + np.cos(np.pi * np.arange(fade) / (fade - 1)))
+        x[n - fade:] *= ramp
+    return x
 
 
 def two_tone(n, fs, f1, f2, amplitude):
@@ -193,7 +211,7 @@ def read_wav_float(path):
     return np.frombuffer(raw, "<f4").astype(np.float64)
 
 
-def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir):
+def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir, *, timeout=60):
     """Drive one model with signal via RunFilters --float.
 
     RunFilters writes one WAV per model, named <FilterName>_c<cutoff>_r<resonance>
@@ -203,11 +221,25 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir)
     of FILTER_NAMES: RunFilters has no single-model mode, so a name that matches no
     file is a failed run rather than a different model.
 
+    Resonance is 0..1, which is what RunFilters takes and what the models map to
+    absolute feedback k = 4r, so the range is k in [0, 4]: the self-oscillation
+    threshold of a 4-pole ladder. A wider domain would not be more permissive in
+    practice, only quieter about it, since RunFilters exits 1 above 1.0.
+
+    `timeout` bounds the invocation in seconds and a run that overruns it is
+    treated as failed, like a nonzero exit. It is keyword-only so a test can use a
+    deadline short enough to keep the suite quick.
+
     Returns the output as float64, or None if the run failed, produced no file for
     this model, or produced any non-finite sample.
     """
-    if cutoff <= 0.0 or cutoff >= 0.5 * SAMPLE_RATE:
+    if not np.isfinite(cutoff) or cutoff <= 0.0 or cutoff >= 0.5 * SAMPLE_RATE:
         raise ValueError(f"cutoff {cutoff} must be in (0, fs/2)")
+    # A NaN fails this test already: every comparison against it is False.
+    if not 0.0 <= resonance <= 1.0:
+        raise ValueError(f"resonance {resonance} must be in [0.0, 1.0]")
+    if oversample not in SUPPORTED_OVERSAMPLES:
+        raise ValueError(f"oversample {oversample} must be one of {SUPPORTED_OVERSAMPLES}")
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     tag = f"{model}_c{int(cutoff)}_r{resonance:.2f}"
@@ -217,19 +249,23 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir)
     outdir.mkdir(parents=True, exist_ok=True)
     write_wav(src, signal)
 
-    result = subprocess.run(
-        [
-            str(runfilters),
-            "-f", str(src),
-            "-c", str(int(cutoff)),
-            "-r", f"{resonance:.2f}",
-            "-s", str(oversample),
-            "-o", str(outdir),
-            "--float",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                str(runfilters),
+                "-f", str(src),
+                "-c", str(int(cutoff)),
+                "-r", f"{resonance:.2f}",
+                "-s", str(oversample),
+                "-o", str(outdir),
+                "--float",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if result.returncode != 0:
         return None
 
