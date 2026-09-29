@@ -36,16 +36,16 @@ REPORT_PATH = REPO / "docs" / "moog-faithfulness-report.md"
 
 # The figures the report embeds, in report order. The captions are built with
 # fe.fig_caption from the same operating points generate_figures drew each one at,
-# so a caption cannot drift from the figure it describes; `relpath` is relative
-# to the figure directory rather than to this file, which is why it starts at
-# `plots/` and not at `moog-faithfulness/plots/`.
+# so a caption cannot drift from the figure it describes. `relpath` is relative
+# to this report file (docs/moog-faithfulness-report.md), which is why it starts
+# at `moog-faithfulness/plots/` and not at `plots/`.
 class FigureSpec(NamedTuple):
     tag: str
     filename: str
 
     @property
     def relpath(self):
-        return f"plots/{self.filename}"
+        return f"moog-faithfulness/plots/{self.filename}"
 
 
 FIGURE_SPECS: Tuple[FigureSpec, ...] = (
@@ -917,7 +917,7 @@ def _figures(records, plots_dir):
         "## 7. Figures",
         "",
         f"The six committed PNGs under `docs/moog-faithfulness/plots/`, "
-        f"referenced by path relative to that directory. Each caption below is "
+        f"referenced by path relative to this report. Each caption below is "
         f"the figure's own title, built by `fig_caption` from the same "
         f"operating point `generate_figures` drew it at, so a caption cannot "
         f"drift from the picture.",

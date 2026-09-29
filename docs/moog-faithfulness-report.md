@@ -244,41 +244,41 @@ Known artifact, carried from the 2026-09-28 legacy suite rather than measured he
 
 ## 7. Figures
 
-The six committed PNGs under `docs/moog-faithfulness/plots/`, referenced by path relative to that directory. Each caption below is the figure's own title, built by `fig_caption` from the same operating point `generate_figures` drew it at, so a caption cannot drift from the picture.
+The six committed PNGs under `docs/moog-faithfulness/plots/`, referenced by path relative to this report. Each caption below is the figure's own title, built by `fig_caption` from the same operating point `generate_figures` drew it at, so a caption cannot drift from the picture.
 
 F3 and F4 draw one oracle, and the title names whose it is: the oracle on a record is aligned to the model it was measured against, so `Stilson`'s view of it is the one plotted. There is no single oracle curve to draw here.
 
-![F1 — reference magnitude vs k at (fc=1000, K=various, f_s=44100)](plots/F1_reference_magnitude_vs_k.png)
+![F1 — reference magnitude vs k at (fc=1000, K=various, f_s=44100)](moog-faithfulness/plots/F1_reference_magnitude_vs_k.png)
 
 F1 — reference magnitude vs k at (fc=1000, K=various, f_s=44100)
 
 The headline shape target: the analytic magnitude of the analog ladder at one leading-pole cutoff, swept over the whole usable k range. Every model is scored against this family, and against k=2 in particular.
 
-![F2 — cutoff error vs linear score at (fc=1000, K=calibrated, f_s=44100)](plots/F2_cutoff_error_vs_score.png)
+![F2 — cutoff error vs linear score at (fc=1000, K=calibrated, f_s=44100)](moog-faithfulness/plots/F2_cutoff_error_vs_score.png)
 
 F2 — cutoff error vs linear score at (fc=1000, K=calibrated, f_s=44100)
 
 One dot per model: how far the model's -3 dB point sits from the reference's at the calibrated resonance, against its linear score. A dot at zero error and low score is a model that gets the corner right and the rest of the curve wrong.
 
-![F3 — harmonic spectrum vs oracle (Stilson-aligned) at (fc=1000, K=2, f_s=44100, level=-6)](plots/F3_harmonic_spectrum.png)
+![F3 — harmonic spectrum vs oracle (Stilson-aligned) at (fc=1000, K=2, f_s=44100, level=-6)](moog-faithfulness/plots/F3_harmonic_spectrum.png)
 
 F3 — harmonic spectrum vs oracle (Stilson-aligned) at (fc=1000, K=2, f_s=44100, level=-6)
 
 H1 through H10 in dB relative to each signal's own fundamental, for every model and for one model's oracle. The oracle is named in the title because it is model-aligned: align_signals shifts it by the model's own cross-correlation, so there is no single oracle curve to draw.
 
-![F4 — THD vs level, with oracle (Stilson-aligned) at (fc=1000, K=2, f_s=44100, level=5 levels)](plots/F4_thd_vs_level.png)
+![F4 — THD vs level, with oracle (Stilson-aligned) at (fc=1000, K=2, f_s=44100, level=5 levels)](moog-faithfulness/plots/F4_thd_vs_level.png)
 
 F4 — THD vs level, with oracle (Stilson-aligned) at (fc=1000, K=2, f_s=44100, level=5 levels)
 
 Total harmonic distortion in percent against input level, from the same model-aligned oracle. A model whose line is flat across the five levels is not distortion-free, it is not responding to level at all.
 
-![F5 — spectral distance vs cutoff at (fc=3 cutoffs, K=calibrated, f_s=44100, level=-6)](plots/F5_spectral_distance_vs_fc.png)
+![F5 — spectral distance vs cutoff at (fc=3 cutoffs, K=calibrated, f_s=44100, level=-6)](moog-faithfulness/plots/F5_spectral_distance_vs_fc.png)
 
 F5 — spectral distance vs cutoff at (fc=3 cutoffs, K=calibrated, f_s=44100, level=-6)
 
 RMS log-magnitude distance to the oracle at each of the three cutoffs, at one level. It separates models whose error is a fixed offset from models whose error grows with frequency.
 
-![F6 — linear and nonlinear scores at (fc=all, K=calibrated/2, f_s=44100, level=mixed)](plots/F6_score_bars.png)
+![F6 — linear and nonlinear scores at (fc=all, K=calibrated/2, f_s=44100, level=mixed)](moog-faithfulness/plots/F6_score_bars.png)
 
 F6 — linear and nonlinear scores at (fc=all, K=calibrated/2, f_s=44100, level=mixed)
 
