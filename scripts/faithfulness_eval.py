@@ -1305,6 +1305,13 @@ def generate_figures(records, out_dir):
     oracle_model = _oracle_source(records)
     oracle_prof = _oracle_pick(records, ORACLE_CASE, "harmonic_profile_db_oracle",
                                model=oracle_model)
+    # The oracle on a record is the oracle aligned to that model, so a line drawn
+    # as "oracle" is quoting one model's view of it and the figures are embedded
+    # where that cannot be read off the surrounding prose. Name the model in the
+    # legend and the title, and say nothing when there is no source to name: a
+    # title reading "(None-aligned)" is a disclosure that discloses nothing.
+    oracle_suffix = f" ({oracle_model}-aligned)" if oracle_model else ""
+    oracle_label = f"oracle{oracle_suffix}"
 
     def legend(ax):
         if ax.get_legend_handles_labels()[0]:
@@ -1358,7 +1365,7 @@ def generate_figures(records, out_dir):
     # THD comes from.
     if oracle_prof:
         ax.plot(range(1, len(oracle_prof) + 1), oracle_prof,
-                color="k", linestyle="--", label="oracle")
+                color="k", linestyle="--", label=oracle_label)
     for name, rec in records.items():
         if not _ok(rec):
             continue
@@ -1368,7 +1375,8 @@ def generate_figures(records, out_dir):
     ax.set_xlabel("harmonic order")
     # harmonic_profile_db reports every harmonic relative to H1, not in dBFS.
     ax.set_ylabel("dB re H1")
-    ax.set_title(fig_caption("F3", title="harmonic spectrum vs oracle",
+    ax.set_title(fig_caption("F3",
+                             title=f"harmonic spectrum vs oracle{oracle_suffix}",
                              fc=1000, K=2, f_s=SAMPLE_RATE, level=-6))
     legend(ax)
     save(fig, "F3_harmonic_spectrum.png")
@@ -1399,11 +1407,11 @@ def generate_figures(records, out_dir):
     if oracle_thd:
         oracle_thd.sort()
         ax.plot([p[0] for p in oracle_thd], [p[1] for p in oracle_thd],
-                color="k", linestyle="--", label="oracle")
+                color="k", linestyle="--", label=oracle_label)
     ax.set_xlabel("level (dBFS)")
     ax.set_ylabel("THD (%)")
-    ax.set_title(fig_caption("F4", title="THD vs level", fc=1000, K=2,
-                             f_s=SAMPLE_RATE, level="5 levels"))
+    ax.set_title(fig_caption("F4", title=f"THD vs level, with oracle{oracle_suffix}",
+                             fc=1000, K=2, f_s=SAMPLE_RATE, level="5 levels"))
     legend(ax)
     save(fig, "F4_thd_vs_level.png")
 

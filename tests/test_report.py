@@ -169,9 +169,10 @@ def test_f3_and_f4_draw_the_same_models_oracle(monkeypatch, tmp_path):
 
     seen = _captured_axes(monkeypatch, tmp_path, recs)
     f3 = seen["F3_harmonic_spectrum.png"]
-    assert f3["ydata"][f3["labels"].index("oracle")] == [-67.94] + [-80.0] * 9
+    assert f3["ydata"][f3["labels"].index("oracle (Stilson-aligned)")] == \
+        [-67.94] + [-80.0] * 9
     f4 = seen["F4_thd_vs_level.png"]
-    assert f4["ydata"][f4["labels"].index("oracle")] == [12.98] * 5
+    assert f4["ydata"][f4["labels"].index("oracle (Stilson-aligned)")] == [12.98] * 5
 
     # When the enum-first model measured no oracle at all, both figures move to
     # the next one together rather than one of them keeping a stale line.
@@ -182,9 +183,10 @@ def test_f3_and_f4_draw_the_same_models_oracle(monkeypatch, tmp_path):
     assert fe._oracle_source(recs) == "Improved"
     seen = _captured_axes(monkeypatch, tmp_path, recs)
     f3 = seen["F3_harmonic_spectrum.png"]
-    assert f3["ydata"][f3["labels"].index("oracle")] == [-73.78] + [-95.0] * 9
+    assert f3["ydata"][f3["labels"].index("oracle (Improved-aligned)")] == \
+        [-73.78] + [-95.0] * 9
     f4 = seen["F4_thd_vs_level.png"]
-    assert f4["ydata"][f4["labels"].index("oracle")] == [12.96] * 5
+    assert f4["ydata"][f4["labels"].index("oracle (Improved-aligned)")] == [12.96] * 5
 
 
 def test_the_oracle_source_speaks_for_a_figure_it_cannot_serve(monkeypatch, tmp_path):
@@ -203,9 +205,28 @@ def test_the_oracle_source_speaks_for_a_figure_it_cannot_serve(monkeypatch, tmp_
 
     seen = _captured_axes(monkeypatch, tmp_path, recs)
     f3 = seen["F3_harmonic_spectrum.png"]
-    assert "oracle" not in f3["labels"], f3["labels"]
+    assert not any("oracle" in label for label in f3["labels"]), f3["labels"]
     f4 = seen["F4_thd_vs_level.png"]
-    assert f4["ydata"][f4["labels"].index("oracle")] == [12.98] * 5
+    assert f4["ydata"][f4["labels"].index("oracle (Stilson-aligned)")] == [12.98] * 5
+
+
+def test_f3_and_f4_name_the_model_their_oracle_is_aligned_to(monkeypatch, tmp_path):
+    """A line labelled "oracle" does not say what it is a baseline for.
+
+    The oracle on a record is the oracle aligned to that model, so the two figures
+    that draw one are quoting one model's view of it. The report embeds these
+    PNGs, and a reader who cannot see which model the baseline belongs to cannot
+    tell a model difference from an alignment difference.
+    """
+    recs = {
+        "Improved": _with_cases("Improved", [-73.78] + [-95.0] * 9, [12.96] * 5),
+        "Stilson": _with_cases("Stilson", [-67.94] + [-80.0] * 9, [12.98] * 5),
+    }
+    seen = _captured_axes(monkeypatch, tmp_path, recs)
+    for name in ("F3_harmonic_spectrum.png", "F4_thd_vs_level.png"):
+        info = seen[name]
+        assert "oracle (Stilson-aligned)" in info["labels"], info["labels"]
+        assert "Stilson-aligned" in info["title"], info["title"]
 
 
 def test_no_oracle_line_when_no_model_measured_one(monkeypatch, tmp_path):
@@ -213,6 +234,9 @@ def test_no_oracle_line_when_no_model_measured_one(monkeypatch, tmp_path):
     seen = _captured_axes(monkeypatch, tmp_path, {"Stilson": nan_rec})
     for name in ("F3_harmonic_spectrum.png", "F4_thd_vs_level.png"):
         assert "oracle" not in seen[name]["labels"], seen[name]["labels"]
+        # Nothing was drawn, so nothing may claim a source: "(None-aligned)" in a
+        # title is a disclosure that discloses nothing.
+        assert "aligned" not in seen[name]["title"], seen[name]["title"]
 
 
 def test_figures_are_byte_identical_whatever_the_record_order(tmp_path):
@@ -345,7 +369,7 @@ def test_a_nan_profile_draws_no_line_and_no_legend_entry(monkeypatch, tmp_path):
     )
     seen = _captured_axes(monkeypatch, tmp_path, {"A": _record(), "Nan": nan_rec})
     f3 = seen["F3_harmonic_spectrum.png"]
-    assert f3["labels"] == ["oracle", "A"]
+    assert f3["labels"] == ["oracle (A-aligned)", "A"]
 
 
 def _scored(name, lin, nlin):
