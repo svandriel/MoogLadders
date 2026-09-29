@@ -15,27 +15,38 @@ reported but not scored, because a digital implementation must fold the analog
 stopband back and that is not a modeling error.
 
 Usage:
-    python scripts/faithfulness_eval.py --runfilters build/RunFilters
-    python scripts/faithfulness_eval.py --runfilters build/RunFilters --filters Stilson
-    python scripts/faithfulness_eval.py --runfilters build/RunFilters --no-figures
+    python scripts/faithfulness_eval.py
+    python scripts/faithfulness_eval.py --models Stilson,Improved
+    python scripts/faithfulness_eval.py --out-dir filter_validation/faithfulness/run1
+
+    The binary is build/RunFilters unless RUNFILTERS_EXE names another one. It
+    must already be built: the driver does not build it.
 
 Output:
-    filter_validation/faithfulness/<run_id>/
-        wav/       per-model RunFilters output
-        metrics/   per-model JSON
-        scores.json, ranking.md
-    docs/moog-faithfulness/plots/   the six committed figures
+    <out-dir>/
+        <Model>_c<fc>_r<res>_in.wav     the driven input
+        <Model>_c<fc>_r<res>_out/       RunFilters' own per-model output
+        metrics/<Model>.json            the record for that model
 """
 
 import argparse
 import json
+import os
 import struct
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import scipy
+
+# The `reference` package lives at the repo root, but running this file as a
+# script puts scripts/ on sys.path instead, so `from reference import ...`
+# raises ModuleNotFoundError exactly when the CLI is used and never when it is
+# imported from the tests. Same bootstrap tests/test_eval_metrics.py uses.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 SAMPLE_RATE = 44100
 BAND_LIMIT_FRACTION = 0.4
@@ -831,3 +842,193 @@ def score_nonlinear(metrics):
         total += weight * part
         wsum += weight
     return 100.0 * total / wsum if wsum > 0.0 else 0.0
+
+
+LEVELS_DBFS = (-24.0, -18.0, -12.0, -6.0, -3.0)
+SWEEP_N = 131072
+IMPULSE_N = 32768
+DEFAULT_CUTOFFS = (100.0, 1000.0, 5000.0)
+DEFAULT_OVERSAMPLES = (0, 4)
+SELFOSC_RESONANCES = (0.5, 0.9, 1.0)
+COMBINED_WEIGHT_LINEAR = 0.5
+
+# Order must match FilterModelNames in example/helpers.hpp; rankings sort by enum.
+MODEL_NAMES = (
+    "Stilson", "Simplified", "Huovilainen", "Improved", "Krajeski",
+    "RKSimulation", "Microtracker", "MusicDSP", "OberheimVariation",
+    "Hyperion", "HyperionTanh", "HyperionLegacy",
+)
+
+RUNFILTERS_EXE = os.environ.get(
+    "RUNFILTERS_EXE",
+    str(Path("build") / ("RunFilters" + (".exe" if os.name == "nt" else ""))),
+)
+
+
+def collect_linear(model, runfilters, workdir):
+    """Per-model linear set: calibrate resonance, sweep cutoffs, score shape."""
+    r, cal = calibrate_resonance(model, runfilters, workdir)
+    out = {"requested": {}, "measured": {}, "linear_score": None, "score_parts": None}
+    if r is None:
+        out["reason"] = cal.get("reason")
+        return out
+
+    freqs = np.logspace(np.log10(20.0), np.log10(BAND_LIMIT_FRACTION * SAMPLE_RATE), 800)
+    out["requested"]["resonance"] = r
+    out["requested"]["cutoffs_hz"] = list(DEFAULT_CUTOFFS)
+    out["requested"]["oversamples"] = list(DEFAULT_OVERSAMPLES)
+
+    metric_sets = []
+    impulse = np.zeros(IMPULSE_N)
+    impulse[0] = 1.0
+    for fc_ in DEFAULT_CUTOFFS:
+        ref = reference_magnitude_db(fc_, 2.0, freqs)
+        for os in DEFAULT_OVERSAMPLES:
+            y = run_model(model, impulse, fc_, r, os, runfilters, workdir)
+            if y is None:
+                out["measured"][f"fc{fc_}_os{os}"] = {"error": "no finite output"}
+                continue
+            m = shape_metrics(measured_magnitude_db(y, freqs), ref, freqs)
+            m["cutoff_hz"] = fc_
+            m["oversample"] = os
+            out["measured"][f"fc{fc_}_os{os}"] = m
+            metric_sets.append(m)
+
+    if metric_sets:
+        agg = {
+            key: float(np.nanmean([m[key] for m in metric_sets]))
+            for key in (
+                "magnitude_rms_db_error",
+                "cutoff_3db_error_cents",
+                "passband_gain_error_db",
+                "stopband_slope_error_db_per_oct",
+                "peak_gain_error_db",
+                "peak_freq_error_cents",
+            )
+        }
+        out["score_parts"] = agg
+        out["linear_score"] = score_linear(agg)
+    return out
+
+
+def collect_nonlinear(model, runfilters, workdir, oracle, r):
+    """Per-model nonlinear set: model at calibrated resonance r vs oracle at k=2.
+
+    r is the user-facing resonance calibrated in collect_linear to match the
+    reference at absolute k=2.0, so this runs model and oracle at the same
+    absolute operating point. The signal is a hard-switched square-ish tone
+    (via np.sign) so the comparison stresses the tanh stages.
+    """
+    results = {}
+    k_abs = 2.0
+    for fc in DEFAULT_CUTOFFS:
+        for level in LEVELS_DBFS:
+            amp = 10.0 ** (level / 20.0)
+            t = np.arange(SWEEP_N) / SAMPLE_RATE
+            x = amp * np.sign(np.sin(2 * np.pi * 440.0 * t))
+            yo = oracle.process(x, SAMPLE_RATE, fc, k_abs, ORDER)
+            for os in DEFAULT_OVERSAMPLES:
+                ym = run_model(model, x, fc, r, os, runfilters, workdir)
+                key = f"fc{fc}_lvl{level}_os{os}"
+                if ym is None:
+                    results[key] = {"error": "no finite output"}
+                    continue
+                results[key] = nonlinear_metrics(ym, yo, SAMPLE_RATE)
+    cases = [v for v in results.values() if "error" not in v]
+    total = float(np.mean([score_nonlinear(v) for v in cases])) if cases else None
+    return {"cases": results, "nonlinear_score": total}
+
+
+def _rms_db(x):
+    rms = float(np.sqrt(np.mean(np.asarray(x, dtype=np.float64) ** 2)))
+    return 20.0 * np.log10(max(rms, 1e-30))
+
+
+def collect_selfoscillation(model, runfilters, workdir):
+    """Drive the model at high user resonance and record whether its tail rings.
+
+    The reference self-oscillates at absolute k=4. We do NOT claim any model's
+    r maps to k=4; we document, per r in the top of each model's own range,
+    whether the output tail stays above -60 dBFS long after the burst ends.
+    """
+    burst = 12000
+    out = {}
+    for r in SELFOSC_RESONANCES:
+        t = np.arange(SWEEP_N) / SAMPLE_RATE
+        x = np.where(t < burst / SAMPLE_RATE, 0.001 * np.sin(2 * np.pi * 500.0 * t), 0.0)
+        y = run_model(model, x, DEFAULT_CUTOFFS[1], r, 0, runfilters, workdir)
+        if y is None:
+            out[str(r)] = {"ringing": True, "tail_rms_db": None, "note": "model diverged"}
+            continue
+        tail = y[burst:]
+        db = _rms_db(tail)
+        out[str(r)] = {"ringing": bool(db > -60.0), "tail_rms_db": db}
+    return out
+
+
+def _timestamp():
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _git_head():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], text=True
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def get_oracle():
+    from reference import moog_ladder_oracle
+    return moog_ladder_oracle
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    ap = argparse.ArgumentParser(description="Evaluate model faithfulness")
+    ap.add_argument("--models", default="All", help="comma-separated model names, or All")
+    ap.add_argument("--out-dir", default=str(Path("filter_validation/faithfulness") / _timestamp()))
+    ap.add_argument("--ref-only", action="store_true", help="only rebuild the oracle / references")
+    ap.add_argument("--no-run", action="store_true", help="skip external binary runs")
+    args = ap.parse_args(argv)
+
+    ld = {
+        "args": vars(args),
+        "generated_at": _timestamp(),
+        "git_head": _git_head(),
+        "software": {"python": sys.version.split()[0], "numpy": np.__version__,
+                      "scipy": scipy.__version__},
+    }
+    run_dir = Path(args.out_dir)
+    metrics_dir = run_dir / "metrics"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    names = MODEL_NAMES if args.models == "All" else [s.strip() for s in args.models.split(",")]
+    oracle = get_oracle()
+    for name in names:
+        record = {
+            "model": name,
+            "status": "ok",
+            "linear": None,
+            "nonlinear": None,
+            "selfosc": None,
+        }
+        try:
+            linear = collect_linear(name, RUNFILTERS_EXE, str(run_dir))
+            record["linear"] = linear
+            r = linear["requested"].get("resonance")
+            if r is not None:
+                record["nonlinear"] = collect_nonlinear(name, RUNFILTERS_EXE, str(run_dir), oracle, r)
+            record["selfosc"] = collect_selfoscillation(name, RUNFILTERS_EXE, str(run_dir))
+        except Exception as exc:
+            record["status"] = f"error: {exc.__class__.__name__}: {exc}"
+        with open(metrics_dir / f"{name}.json", "w") as fh:
+            json.dump({**ld, **record}, fh, indent=2)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

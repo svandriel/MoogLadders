@@ -65,12 +65,14 @@ def test_sine_sweep_is_logarithmic():
 
 # The body a well-behaved RunFilters would run: name the output the way
 # BuildOutputFilename does (example/run-filters.cpp:55) and write a float32 WAV,
-# because run_model always passes --float.
+# because run_model always passes --float. @MODEL@ is the model the file is
+# named for, because RunFilters writes every model and run_model picks its own
+# out of the directory by that name.
 _STUB_WRITES_OUTPUT = (
     "a = sys.argv\n"
     "v = lambda f: a[a.index(f) + 1]\n"
     # %.0f, the way BuildOutputFilename names the cutoff, not int().
-    "tag = f'Stilson_c{float(v('-c')):.0f}_r{float(v('-r')):.2f}'\n"
+    "tag = f'@MODEL@_c{float(v('-c')):.0f}_r{float(v('-r')):.2f}'\n"
     "if int(v('-s')):\n"
     "    tag += f'_os{int(v('-s'))}x'\n"
     "d = Path(v('-o'))\n"
@@ -84,15 +86,27 @@ _STUB_WRITES_OUTPUT = (
 )
 
 
-def _stub_runfilters(tmp_path, sleep=0.0, exit_code=0):
+def _stub_runfilters(tmp_path, sleep=0.0, exit_code=0, model="Stilson"):
     """A stand-in for RunFilters that writes the one file run_model goes looking for.
 
     `sleep` makes the stub overrun a deadline and `exit_code` makes it fail the way
     a rejected argument would, so the failure paths can be tested without a build.
+    `model` names the file the stub writes, which is the only thing that tells
+    run_model which of the per-model files in the directory is its own.
+
+    The output is float32 and not 16-bit PCM because run_model reads with
+    read_wav_float, which rejects PCM by design
+    (test_read_wav_float_rejects_a_pcm16_file): a stub built on the `wave` module
+    would hand run_model an audio-format-1 file and raise instead of returning a
+    signal.
     """
     body = f"time.sleep({sleep})\n"
-    body += f"sys.exit({exit_code})\n" if exit_code else _STUB_WRITES_OUTPUT
-    script = tmp_path / f"runfilters_stub_{sleep}_{exit_code}.py"
+    body += (
+        f"sys.exit({exit_code})\n"
+        if exit_code
+        else _STUB_WRITES_OUTPUT.replace("@MODEL@", model)
+    )
+    script = tmp_path / f"runfilters_stub_{model}_{sleep}_{exit_code}.py"
     script.write_text(
         f"#!{sys.executable}\n"
         "import struct, sys, time\n"
@@ -918,3 +932,206 @@ def test_nonlinear_score_corr_axis_discriminates():
     # ...and a perfect correlation on an otherwise-worst model contributes
     # exactly its 0.15 weight share, no more.
     assert fe.score_nonlinear(dict(worst, harmonic_profile_corr=1.0)) == 15.0
+
+
+def test_run_model_rejects_fc_beyond_half_sample_rate(tmp_path):
+    """The collector's own grid must stay inside the open band, or every sweep raises."""
+    with pytest.raises(ValueError):
+        fe.run_model(
+            "Dummy", np.zeros(64), 30000.0, 0.0, 0, "ignored-binary", str(tmp_path)
+        )
+
+
+def test_collect_linear_returns_key_schema(tmp_path):
+    result = fe.collect_linear("Dummy", _stub_runfilters(tmp_path, model="Dummy"), str(tmp_path))
+    for key in ("requested", "measured", "linear_score", "score_parts"):
+        assert key in result, key
+    # The grid is part of the schema: every cutoff crossed with every oversample
+    # factor, or a model is scored on a subset of what it was asked for.
+    assert set(result["measured"]) == {
+        f"fc{fc}_os{os}"
+        for fc in fe.DEFAULT_CUTOFFS
+        for os in fe.DEFAULT_OVERSAMPLES
+    }
+    assert set(result["score_parts"]) == set(fe.LINEAR_WEIGHTS)
+    # The stub emits digital silence, so nothing about it is measurable: the
+    # score is 0.0 rather than None, which is what shows the aggregation ran
+    # over every case instead of the collector bailing out.
+    assert result["linear_score"] == 0.0
+
+
+def test_collect_linear_excludes_unstable_resonance(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        fe,
+        "calibrate_resonance",
+        lambda *a, **k: (None, {"reason": "no finite output at any resonance"}),
+    )
+    result = fe.collect_linear("Dummy", _stub_runfilters(tmp_path, model="Dummy"), str(tmp_path))
+    assert result["linear_score"] is None
+    assert "reason" in result
+
+
+def test_collect_linear_drives_the_shape_sweep_with_an_impulse(tmp_path, monkeypatch):
+    """Silence measures silence: a flat -600 dB curve scores nothing about shape.
+
+    The sweep's excitation is pinned here because nothing else about a run
+    distinguishes it from a drive of zeros, and a zero drive is the failure mode
+    this catches: every fc/os would report a perfect flat response in the
+    passband and score its way into the ranking.
+    """
+    drives = []
+
+    def fake_run_model(model, signal, cutoff, resonance, oversample, *a, **k):
+        drives.append(np.asarray(signal, dtype=np.float64))
+        return np.zeros(2048)
+
+    # Calibration is the other half of the collector's driving, and is measured
+    # by its own test; stubbing it keeps this to the shape sweep.
+    monkeypatch.setattr(fe, "calibrate_resonance", lambda *a, **k: (0.5, {}))
+    monkeypatch.setattr(fe, "run_model", fake_run_model)
+    fe.collect_linear("Dummy", "unused", str(tmp_path))
+
+    assert len(drives) == len(fe.DEFAULT_CUTOFFS) * len(fe.DEFAULT_OVERSAMPLES)
+    for signal in drives:
+        assert signal.shape == (fe.IMPULSE_N,)
+        assert np.count_nonzero(signal) == 1
+        assert signal[0] == 1.0
+
+
+def test_collect_nonlinear_pairs_every_case_with_the_oracle_at_one_operating_point(
+    tmp_path, monkeypatch
+):
+    """Model at the calibrated r, oracle at the absolute k that calibration matched.
+
+    The pairing is the whole claim of this axis: a model measured at one
+    operating point against an oracle measured at another measures the
+    difference between them, not the model's error. SWEEP_N is dropped so the
+    case grid is affordable here; the record length is a property of
+    nonlinear_metrics, which has its own tests.
+    """
+    monkeypatch.setattr(fe, "SWEEP_N", 4096)
+    seen = []
+
+    def fake_run_model(model, signal, cutoff, resonance, oversample, *a, **k):
+        seen.append(("model", cutoff, resonance, oversample))
+        return np.asarray(signal, dtype=np.float64)
+
+    class Oracle:
+        def process(self, x, fs, fc, k, n):
+            seen.append(("oracle", fc, k, n))
+            return 0.5 * np.asarray(x, dtype=np.float64)
+
+    monkeypatch.setattr(fe, "run_model", fake_run_model)
+    out = fe.collect_nonlinear("Dummy", "unused", str(tmp_path), Oracle(), 0.4)
+
+    expected = {
+        f"fc{fc}_lvl{lvl}_os{os}"
+        for fc in fe.DEFAULT_CUTOFFS
+        for lvl in fe.LEVELS_DBFS
+        for os in fe.DEFAULT_OVERSAMPLES
+    }
+    assert set(out["cases"]) == expected
+    assert len(expected) == 30
+    assert not any("error" in v for v in out["cases"].values())
+    model_runs = [s for s in seen if s[0] == "model"]
+    assert {s[2] for s in model_runs} == {0.4}
+    oracle_runs = [s for s in seen if s[0] == "oracle"]
+    assert {(s[2], s[3]) for s in oracle_runs} == {(2.0, fe.ORDER)}
+    # One oracle record per (cutoff, level), reused across the oversample factors:
+    # oversampling is a property of the model under test, not of the reference.
+    assert len(oracle_runs) == len(fe.DEFAULT_CUTOFFS) * len(fe.LEVELS_DBFS)
+    assert 0.0 <= out["nonlinear_score"] <= 100.0
+
+
+def test_collect_selfoscillation_reports_ringing_per_resonance(tmp_path, monkeypatch):
+    def fake_run_model(model, signal, cutoff, resonance, oversample, *a, **k):
+        if resonance == 1.0:
+            return None  # diverged: no finite output to measure a tail from
+        y = np.zeros(len(signal))
+        if resonance >= 0.9:
+            # Still swinging at -43 dBFS after the 12000-sample burst ended. A
+            # constant tail would sit exactly on the -60 dBFS threshold, which
+            # tests the comparison operator instead of the ringing.
+            tail = np.arange(len(signal) - len(signal) // 2)
+            y[len(signal) // 2:] = 1e-2 * np.sin(2 * np.pi * 50.0 * tail / fe.SAMPLE_RATE)
+        return y
+
+    monkeypatch.setattr(fe, "run_model", fake_run_model)
+    out = fe.collect_selfoscillation("Dummy", "unused", str(tmp_path))
+
+    assert set(out) == {str(r) for r in fe.SELFOSC_RESONANCES}
+    assert out["0.5"]["ringing"] is False
+    assert out["0.5"]["tail_rms_db"] < -60.0
+    assert out["0.9"]["ringing"] is True
+    assert out["0.9"]["tail_rms_db"] > -60.0
+    # A diverged run has no tail to measure, and is recorded as such rather than
+    # as a measured non-ringing model.
+    assert out["1.0"]["tail_rms_db"] is None
+    assert out["1.0"]["note"] == "model diverged"
+
+
+def test_main_writes_one_json_per_model_with_the_shared_envelope(tmp_path, monkeypatch):
+    monkeypatch.setattr(fe, "RUNFILTERS_EXE", "unused")
+    monkeypatch.setattr(
+        fe,
+        "collect_linear",
+        lambda *a: {
+            "requested": {"resonance": 0.4},
+            "measured": {},
+            "linear_score": 50.0,
+            "score_parts": {},
+        },
+    )
+    monkeypatch.setattr(
+        fe, "collect_nonlinear", lambda *a: {"cases": {}, "nonlinear_score": 25.0}
+    )
+    monkeypatch.setattr(
+        fe, "collect_selfoscillation", lambda *a: {"0.5": {"ringing": False, "tail_rms_db": -200.0}}
+    )
+    out_dir = tmp_path / "run1"
+    assert fe.main(["--models", "Dummy, Other", "--out-dir", str(out_dir)]) == 0
+
+    for name in ("Dummy", "Other"):
+        record = json.loads((out_dir / "metrics" / f"{name}.json").read_text())
+        assert record["model"] == name
+        assert record["status"] == "ok"
+        assert record["linear"]["linear_score"] == 50.0
+        assert record["nonlinear"]["nonlinear_score"] == 25.0
+        assert record["selfosc"]["0.5"]["ringing"] is False
+        # The envelope is what makes two runs comparable later, so every file
+        # carries the same provenance keys the driver was handed.
+        assert set(record) >= {"args", "generated_at", "git_head", "software"}
+        assert set(record["software"]) == {"python", "numpy", "scipy"}
+        assert record["args"]["models"] == "Dummy, Other"
+        assert record["args"]["out_dir"] == str(out_dir)
+
+
+def test_main_records_a_collector_failure_and_still_writes_the_json(tmp_path, monkeypatch):
+    """One model's failure is that model's record, not the end of the sweep.
+
+    The JSON is written inside the same try's other side, so a model that
+    raises still leaves a file behind: a driver that swallowed the exception
+    without writing would leave a hole where a ranking entry belongs.
+    """
+
+    def boom(*a, **k):
+        raise RuntimeError("no binary")
+
+    monkeypatch.setattr(fe, "RUNFILTERS_EXE", "unused")
+    monkeypatch.setattr(fe, "collect_linear", boom)
+    monkeypatch.setattr(fe, "collect_nonlinear", lambda *a: {})
+    monkeypatch.setattr(fe, "collect_selfoscillation", lambda *a: {})
+    out_dir = tmp_path / "run2"
+
+    assert fe.main(["--models", "Broken", "--out-dir", str(out_dir)]) == 0
+    record = json.loads((out_dir / "metrics" / "Broken.json").read_text())
+    assert record["status"] == "error: RuntimeError: no binary"
+    assert record["linear"] is None
+    assert record["nonlinear"] is None
+    assert record["selfosc"] is None
+
+
+def test_main_runs_every_model_name_the_enum_lists():
+    """The default sweep covers all twelve, and only names RunFilters actually writes."""
+    assert fe.MODEL_NAMES == tuple(fe.FILTER_NAMES)
+    assert len(fe.MODEL_NAMES) == 12
