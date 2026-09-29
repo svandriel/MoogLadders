@@ -194,7 +194,7 @@ Self-oscillation: rings at r=0.90, r=1.00, loudest tail -14.33 dBFS, quiet at th
 Linear axis: the most credit it earned was stopband slope error (2.13 dB/octave), worth 0.12 of the 0.15 it earned on the axis, and the least was RMS magnitude error (11.84 dB), worth 0.00.
 Unmeasurable on this model: cutoff error (no finite value in any of the 6 cases). Each is n/a in section 9.1 and scores zero on the way to the total, because a curve that never falls through -3 dB has no cutoff to report and must not collect the credit for one it did not earn.
 Self-oscillation: no tail stayed above -60 dBFS at r=0.50, r=0.90, r=1.00, so this run did not observe it oscillating at the top of its own resonance range.
-Known artifact, carried from the 2026-09-28 legacy suite rather than measured here: The legacy suite reported `dc_gain = -1.0000`, inverting the step instead of low-passing it. This sweep drives impulses and tones, not a step, so it has no `dc_gain` of its own with which to confirm or contradict that.
+Known artifact, carried from the 2026-09-28 legacy suite rather than measured here: The legacy suite reported `dc_gain = -0.99997` (approximately -1) at its step operating point, inverting the step instead of low-passing it; the inversion persists across resonance, shrinking in magnitude. This sweep drives impulses and tones, not a step, so it has no `dc_gain` of its own with which to confirm or contradict that.
 
 ### Microtracker
 
@@ -209,7 +209,7 @@ Self-oscillation: no tail stayed above -60 dBFS at r=0.50, r=0.90, r=1.00, so th
 Linear axis: the most credit it earned was peak gain error (1.53 dB low), worth 0.09 of the 0.17 it earned on the axis, and the least was RMS magnitude error (10.32 dB), worth 0.00.
 Unmeasurable on this model: cutoff error (no finite value in any of the 6 cases). Each is n/a in section 9.1 and scores zero on the way to the total, because a curve that never falls through -3 dB has no cutoff to report and must not collect the credit for one it did not earn.
 Self-oscillation: no tail stayed above -60 dBFS at r=0.50, r=0.90, r=1.00, so this run did not observe it oscillating at the top of its own resonance range.
-Known artifact, carried from the 2026-09-28 legacy suite rather than measured here: The legacy suite's step record is 743.04 ms long and this model's output did not enter the 2 % band until 742.27 ms at r=0.50 and 742.77 ms at r=0.90, so it settled only in the last millisecond of the window at any resonance that was swept. (MusicDSP at r=0.90 reports 743.04 ms, which is the record length: the metric's way of saying it never settled inside the window at all.) This sweep drives impulses and tones, not a step, so it has no `dc_gain` of its own with which to confirm or contradict that.
+Known artifact, carried from the 2026-09-28 legacy suite rather than measured here: The legacy suite's step record is 743.04 ms long and this model's output did not enter the 2 % band until 742.27 ms at r=0.50 and 742.77 ms at r=0.90 - it settled only in the last millisecond of the window at those two resonances. (At r=0.00 it settled promptly, in 27 ms.) MusicDSP at r=0.90 reports 743.04 ms, which is the record length: the metric's way of saying it never settled inside the window at all. This sweep drives impulses and tones, not a step, so it has no `dc_gain` of its own with which to confirm or contradict that.
 
 ### RKSimulation
 
@@ -230,7 +230,7 @@ Self-oscillation: no tail stayed above -60 dBFS at r=0.50, r=0.90, r=1.00, so th
 Linear axis: no credit on any of the six metrics, to the two decimal places this report prints. All six sit at or within a rounding step of the worst value the scale admits, so the axis total is the floor rather than an average of mediocre results.
 The fc100.0_os0 case is not a badly tuned response but no response at all: a -591.24 dB passband gain error against a reference within a few dB of unity puts the measured magnitude on the -600 dB floor `spectrum_db` applies to digital silence. One dead case out of six dominates the mean, which is why the aggregate reads worse than the live cases do.
 Self-oscillation: rings at r=1.00, loudest tail -34.87 dBFS, quiet at the rest. It is reachable inside the user range, not only at the top of it.
-Known artifact, carried from the 2026-09-28 legacy suite rather than measured here: The legacy suite reported `dc_gain = 0.0000` at all three cutoffs, emitting literal zeros to a step. This sweep drives impulses and tones, not a step, so it has no `dc_gain` of its own with which to confirm or contradict that.
+Known artifact, carried from the 2026-09-28 legacy suite rather than measured here: The legacy suite reported `dc_gain = 0.0000` at its step operating point, emitting literal zeros to a step. This sweep drives impulses and tones, not a step, so it has no `dc_gain` of its own with which to confirm or contradict that.
 
 ## 6. Threats to validity
 

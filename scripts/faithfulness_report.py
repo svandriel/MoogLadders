@@ -222,25 +222,31 @@ LINEAR_DIRECTION = {"low": "low", "high": "high"}
 
 # Facts carried over from the 2026-09-28 legacy run
 # (scripts/filter_verification.py, filter_validation/<run>/metrics/step.json).
-# They are not measurements of this harness: this sweep drives impulses and
-# tones, not a step, so it has no dc_gain to report. They are quoted as what
-# that suite found, and where this run sees the same defect the card says so.
+# The legacy step suite swept fc=1000 only, at resonances 0.0/0.5/0.9, so every
+# claim below is scoped to what was measured there (Stilson returned dc_gain
+# 0.0000 and Improved -0.99997 at every resonance swept; Improved's gain stays
+# inverted but shrinks in magnitude as resonance rises). They are not
+# measurements of this harness: this sweep drives impulses and tones, not a
+# step, so it has no dc_gain to report. They are quoted as what that suite
+# found, and where this run sees the same defect the card says so.
 LEGACY_ARTIFACTS = {
     "Stilson": (
-        "The legacy suite reported `dc_gain = 0.0000` at all three cutoffs, "
-        "emitting literal zeros to a step."
+        "The legacy suite reported `dc_gain = 0.0000` at its step operating "
+        "point, emitting literal zeros to a step."
     ),
     "Improved": (
-        "The legacy suite reported `dc_gain = -1.0000`, inverting the step "
-        "instead of low-passing it."
+        "The legacy suite reported `dc_gain = -0.99997` (approximately -1) at "
+        "its step operating point, inverting the step instead of low-passing "
+        "it; the inversion persists across resonance, shrinking in magnitude."
     ),
     "HyperionLegacy": (
         "The legacy suite's step record is 743.04 ms long and this model's "
         "output did not enter the 2 % band until 742.27 ms at r=0.50 and "
-        "742.77 ms at r=0.90, so it settled only in the last millisecond of "
-        "the window at any resonance that was swept. (MusicDSP at r=0.90 "
-        "reports 743.04 ms, which is the record length: the metric's way of "
-        "saying it never settled inside the window at all.)"
+        "742.77 ms at r=0.90 - it settled only in the last millisecond of "
+        "the window at those two resonances. (At r=0.00 it settled promptly, "
+        "in 27 ms.) MusicDSP at r=0.90 reports 743.04 ms, which is the record "
+        "length: the metric's way of saying it never settled inside the "
+        "window at all."
     ),
 }
 

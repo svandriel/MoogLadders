@@ -281,9 +281,11 @@ the oversampling base is shared.
 3. **Methodology.** Reference, calibration, metrics, weights.
 4. **Results.** Linear ranking, nonlinear ranking, combined, side by side.
 5. **Per-model cards.** Strengths, failures, and known artifacts. Three are already confirmed from
-   the 2026-09-28 run: Stilson reports `dc_gain = 0.0000` at all three cutoffs, emitting literal
-   zeros to a step; `Improved` reports `dc_gain = -1.0000`, inverting the signal; `HyperionLegacy`
-   never settles within a 743 ms window.
+   the 2026-09-28 run: Stilson reports `dc_gain = 0.0000` at the step suite's operating point,
+   emitting literal zeros to a step; `Improved` reports `dc_gain = -0.99997` (an inversion) that
+   persists, shrinking in magnitude, as resonance rises; `HyperionLegacy` settles only in the last
+   millisecond of the 743 ms step window at high resonance (it settles promptly at r=0.00);
+   `MusicDSP` alone never settles inside the window at all.
 6. **Threats to validity.** Leads with the honest one, that the nonlinear axis is measured
    against a model rather than hardware. No public Moog I/O dataset was found, so that axis
    cannot be independently verified here.
