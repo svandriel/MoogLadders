@@ -2748,10 +2748,10 @@ empty fixture data); Task 14 regenerates them from the real end-to-end run.
 - Modify: `scripts/faithfulness_eval.py`, `example/run-filters.cpp`, `example/helpers.hpp`
 - New: `scripts/faithfulness_report.py`
 
-- [ ] **Step 1: Build the float32 path first
+- [x] **Step 1: Build the float32 path first
 
-Wire `--float` into `RunFilters` per Task 6. Confirm `filter_verification.py`
-still produces byte-identical 16-bit output (add a git-tracked regression test).
+Done in Tasks 6/7 (`--float` landed in commit `afa8389`; the PCM16 regression
+tests live in `tests/test_runfilters_float.py`). Nothing left to build.
 
 - [ ] **Step 2: Run the full sweep
 
@@ -2760,8 +2760,20 @@ mkdir -p filter_validation/faithfulness
 python scripts/faithfulness_eval.py --models All --out-dir filter_validation/faithfulness/run1
 ```
 
-Check: per-model JSON exists, per-model `status == "ok"`, `combined` order is
-Stilson/Huovilainen/Improved not reversed, and no model reports `-240.0` dB.
+Check: per-model JSON exists, per-model `status == "ok"` (or `flagged`, which a
+look at `flagged` keys explains), and no model reports the legacy suite's
+`-240.0` dB self-oscillation sentinel (the faithful harness uses a `-600` dB
+floor instead, so any `-240.0` in a record is a bug).
+
+Note (Task 14 dispatch, reconciled against the real run): the earlier wording
+claimed the combined order is "Stilson/Huovilainen/Improved not reversed". The
+measured order from `filter_validation/figs_all/metrics` is HyperionTanh,
+Hyperion, Huovilainen, MusicDSP, OberheimVariation, Krajeski, Improved,
+Microtracker, HyperionLegacy, RKSimulation, Simplified, Stilson. Stilson's
+linear axis measures 0.30 (its `fc100.0_os0` magnitude sits on the `-600` dB
+floor, consistent with the legacy-suite artifact `dc_gain=0.0000`), so it ranks
+last, not first. The report states the measured order; it does not assert a
+predicted order.
 
 - [ ] **Step 3: Implement the report writer
 
@@ -2786,11 +2798,14 @@ Stilson/Huovilainen/Improved not reversed, and no model reports `-240.0` dB.
 
 In the report script, before writing the final markdown, assert:
 
-- each model has `status == "ok"`,
+- each rankable model has `status == "ok"`; a model with `status == "flagged"`
+  is excluded from the ranking and its flag reason is stated instead,
 - the ranking table is non-empty,
-- at least one model never settles (HyperionLegacy), so the step-settling risk
-  is stated,
-- `docs/moog-faithfulness/plots/*.png` exists.
+- at least one model rings (self-oscillation `ringing: True` exists, so the
+  self-oscillation risk is stated; HyperionLegacy does not ring and instead is
+  the one model the legacy suite found never settles, `742.27 ms` on a `743 ms`
+  window — the report says both facts),
+- `docs/moog-faithfulness/plots/*.png` exists (all six).
 
 - [ ] **Step 5: Generate and open the report
 
