@@ -251,7 +251,8 @@ LEGACY_ARTIFACTS = {
         ("The legacy suite reported `dc_gain = 0.0000` at its step operating "
          "point, emitting literal zeros to a step.",
          "This sweep drives impulses and tones, not a step, so it has no "
-         "`dc_gain` of its own with which to confirm or contradict that."),
+         "`dc_gain` of its own with which to confirm or contradict that; the "
+         "legacy step suite swept fc=1000 only, at resonances 0.0/0.5/0.9."),
         ("In that suite's THD sweep, at its -6 dBFS input level (fc=5000, "
          "r=0.00) this model reported THD 0.0000 %, with all five of its "
          "harmonics sitting at -240.0 dB, the sentinel that suite writes for "
@@ -266,7 +267,8 @@ LEGACY_ARTIFACTS = {
          "its step operating point, inverting the step instead of low-passing "
          "it; the inversion persists across resonance, shrinking in magnitude.",
          "This sweep drives impulses and tones, not a step, so it has no "
-         "`dc_gain` of its own with which to confirm or contradict that."),
+         "`dc_gain` of its own with which to confirm or contradict that; the "
+         "legacy step suite swept fc=1000 only, at resonances 0.0/0.5/0.9."),
     ),
     "HyperionLegacy": (
         ("The legacy suite's step record is 743.04 ms long and this model's "
@@ -277,7 +279,8 @@ LEGACY_ARTIFACTS = {
          "length: the metric's way of saying it never settled inside the "
          "window at all.",
          "This sweep drives impulses and tones, not a step, so it has no "
-         "`dc_gain` of its own with which to confirm or contradict that."),
+         "`dc_gain` of its own with which to confirm or contradict that; the "
+         "legacy step suite swept fc=1000 only, at resonances 0.0/0.5/0.9."),
     ),
 }
 
@@ -893,24 +896,28 @@ def _card(name, rec, rank, rings):
 def _faithful_thd_clause(rec):
     """How this run's own THD reading sits beside a legacy one for the same model.
 
-    The legacy suite's THD sweep ran at fc=5000 and this one at fc=1000, and it
-    read the figure from binned FFT bins where this harness reads the
+    The legacy suite's THD sweep ran at fc=5000 and r=0.00, and this one at
+    fc=1000 and k=2, so the two readings differ on two axes rather than one,
+    and it read the figure from binned FFT bins where this harness reads the
     interpolated fundamental. The two numbers are not the same measurement, so
     the clause that keeps a legacy card from reading as a contradiction has to
     name this run's own figure: a reader holding "0.0000 %" in one hand and
     section 4.3's column in the other needs to be told which is which, and told
-    it in numbers rather than in a disclaimer. When the model has no figure at
+    it in numbers rather than in a disclaimer. The figure therefore hangs off
+    "section 4.3's column" as its subject and not off the legacy operating
+    point, which a trailing relative clause would otherwise let "where" bind to
+    and read as a claim about the legacy sweep. When the model has no figure at
     that operating point the comparison is dropped rather than filled in.
     """
     case = fe._case(rec, fe.ORACLE_CASE) or {}
     value = fe._num(case.get("thd_model_percent"))
-    clause = ("Section 4.3's THD column is a different sweep, at "
-              f"fc={ORACLE_FC:g} on this harness rather than fc=5000 on that "
-              "one")
+    clause = ("Section 4.3's column is a different sweep - at fc=5000, r=0.00 "
+              f"in the legacy sweep against fc={ORACLE_FC:g}, "
+              f"k={NONLINEAR_K:g} on this harness")
     if value is None:
-        return f"{clause}, so the two figures are not comparable."
-    return (f"{clause}, where this model reads {value:.2f} %, so the two "
-            "figures are not comparable.")
+        return f"{clause} - so the two figures are not comparable."
+    return (f"{clause} - and it reads {value:.2f} % for this model, so the "
+            "two figures are not comparable.")
 
 
 def _selfosc_readings(rec):

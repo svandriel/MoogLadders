@@ -2829,31 +2829,6 @@ git add scripts/faithfulness_report.py docs/moog-faithfulness-report.md && git c
 
 Keep a running `### Mid-flight` section in the plan.
 
-### Mid-flight
-
-- **Figure count: six, and no seventh needed.** `git ls-files
-  docs/moog-faithfulness/plots/` returns exactly six committed PNGs, F1..F6,
-  and each is referenced exactly once by `docs/moog-faithfulness-report.md`. The
-  design doc's figure table (six rows, F1..F6) matches that set 1:1, so the
-  counting question closes against the existing table rather than by adding a
-  plot to it.
-- **Artifact set: three confirmed, one added.** The three step facts were
-  checked against `filter_validation/2026-09-28_201435/metrics/step.json` and
-  left as they stand (Stilson `dc_gain = 0.0000`, Improved `-0.99997`,
-  HyperionLegacy settling at 742.27 ms / 742.77 ms with MusicDSP reporting the
-  record length, i.e. never settling). The THD ordering was genuinely missing
-  and is now on Stilson's card, carrying the legacy sweep's operating point
-  (fc=5000, r=0.00, -6 dBFS) and contrasted, in numbers, against section 4.3's
-  own fc=1000 figure for the same model, so it cannot read as contradicting it.
-  Each artifact entry is now a (fact, what-this-sweep-cannot-say) pair, because
-  a step measurement and a THD measurement are confirmed by different evidence,
-  and the contrast figure is read out of the record rather than typed in beside
-  it.
-- **Robustness grep: clean.** `kill`, `match`, `identical`, `hardware` and
-  `best-sounding` over the final report return the same seven pre-existing
-  lines, all of them scoped or counterfactual uses, and nothing from the new
-  text. No edits were needed.
-
 - [x] **Step 1: Figure blessing
 
 Count exactly six committed figures. If a seventh is genuinely useful it must be
@@ -2878,11 +2853,40 @@ fc=1000 only):
 Grep the final report for absolute non-operating-point claims: "kill", "match",
 "identical", "hardware", "best-sounding". Any cleansed.
 
-- [x] **Step 4: Commit, tag, and update progress doc
+- [x] **Step 4: Commit, add the design-doc Completion section, and tag
 
-Copy the completed dates and run metadata into
-`docs/superpowers/specs/2026-09-28-moog-faithfulness-research-design.md`
-(previously recorded under `### Completion` — line numbers rotate).
+Commit the report, record the run's outcome under the design doc's
+`### Completion` section, and cut the `moog-faithfulness-v1` tag. The ledger
+at `.superpowers/sdd/.../progress.md` is the controller's to write and is never
+touched from here, so no completed dates or run metadata are copied into any
+doc by hand.
+
+### Mid-flight
+
+- **Figure count: six, and no seventh needed.** `git ls-files
+  docs/moog-faithfulness/plots/` returns exactly six committed PNGs, F1..F6,
+  and each is referenced exactly once by `docs/moog-faithfulness-report.md`. The
+  design doc's figure table (six rows, F1..F6) matches that set 1:1, so the
+  counting question closes against the existing table rather than by adding a
+  plot to it.
+- **Artifact set: three confirmed, one added.** The three step facts were
+  checked against `filter_validation/2026-09-28_201435/metrics/step.json` and
+  left as they stand (Stilson `dc_gain = 0.0000`, Improved `-0.99997`,
+  HyperionLegacy settling at 742.27 ms / 742.77 ms with MusicDSP reporting the
+  record length, i.e. never settling). The THD ordering was genuinely missing
+  and is now on Stilson's card, carrying the legacy sweep's operating point
+  (fc=5000, r=0.00, -6 dBFS) and contrasted, in numbers, against section 4.3's
+  own fc=1000 figure for the same model, so it cannot read as contradicting it.
+  Each artifact entry is now a (fact, what-this-sweep-cannot-say) pair, because
+  a step measurement and a THD measurement are confirmed by different evidence,
+  and the contrast figure is read out of the record rather than typed in beside
+  it. Each step card also names the operating point that suite measured it at
+  (fc=1000 only, at resonances 0.0/0.5/0.9), so the step facts are scoped the
+  way the THD fact is.
+- **Robustness grep: clean.** `kill`, `match`, `identical`, `hardware` and
+  `best-sounding` over the final report return the same seven pre-existing
+  lines, all of them scoped or counterfactual uses, and nothing from the new
+  text. No edits were needed.
 
 ---
 
