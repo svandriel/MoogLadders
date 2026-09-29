@@ -1100,6 +1100,223 @@ def _flagged_keys(record):
     return sorted(keys)
 
 
+def write_ranking_table(rows):
+    """Render a markdown table. Both axes must appear before the combined score.
+
+    The column order is the argument. A reader who sees only the combined number
+    cannot tell which axis a model failed on, and a faithfulness harness that
+    hides that is a leaderboard.
+    """
+    lines = ["| Model | Linear | Nonlinear | Combined |",
+             "|---|---:|---:|---:|"]
+    for r in rows:
+        lines.append(
+            f"| {r['model']} | {r['linear']:.2f} | {r['nonlinear']:.2f} | {r['combined']:.2f} |"
+        )
+    return "\n".join(lines)
+
+
+def fig_caption(tag, **op):
+    """Build a one-line caption that pins the operating point.
+
+    Every figure here is one operating point, not a summary, so the caption
+    carries the conditions: which cutoff, which k, which sample rate, which level.
+    """
+    base = f"F{tag} — {op.pop('title', tag)}"
+    op_text = ", ".join(f"{k}={v}" for k, v in op.items())
+    return f"{base} at ({op_text})"
+
+
+def _case(rec, key):
+    """One nonlinear case, or None. A collector that raised leaves the section None."""
+    part = rec.get("nonlinear") or {}
+    return (part.get("cases") or {}).get(key)
+
+
+def _ok(rec):
+    return rec.get("status") == "ok"
+
+
+def _num(value):
+    """value as a plottable float, or None. Guards None, NaN, and non-numbers."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if np.isfinite(out) else None
+
+
+def _measured(rec, key):
+    """One linear case's metrics, or {}. Failed cases hold {"error": ...}."""
+    part = rec.get("linear") or {}
+    case = (part.get("measured") or {}).get(key)
+    return case if isinstance(case, dict) else {}
+
+
+def generate_figures(records, out_dir):
+    """Write exactly the six fixed figures as PNGs. Returns the Path list.
+
+    records: {model_name: per-model JSON dict from main's collectors}.
+    out_dir: where the PNGs land (normally docs/moog-faithfulness/plots).
+
+    Every figure is written unconditionally. A model that was flagged, whose
+    collector raised, or whose case failed is skipped, but an axes with one line
+    on it is still a figure: six files that exist and one missing is a report
+    with a hole in it, and a report with a hole in it reads as a measurement
+    that was never taken. The empty axes say nothing, which is the truth.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+
+    def legend(ax):
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize="small")
+
+    def save(fig, name):
+        fig.savefig(out_dir / name, dpi=200)
+        plt.close(fig)
+        written.append(out_dir / name)
+        return out_dir / name
+
+    # F1: reference magnitude vs k (analytic, D'Angelo Part I closed form).
+    fig, ax = plt.subplots()
+    freqs = np.logspace(1, np.log10(BAND_LIMIT_FRACTION * SAMPLE_RATE), 2000)
+    for k in (0.0, 1.0, 2.0, 3.0, 3.9):
+        ax.plot(freqs, reference_magnitude_db(1000.0, k, freqs), label=f"k={k}")
+    ax.set_xscale("log")
+    ax.set_ylabel("dB")
+    ax.set_xlabel("Hz")
+    ax.set_title(fig_caption("F1", fc=1000, K="various", f_s=SAMPLE_RATE, level="-"))
+    ax.legend()
+    save(fig, "F1_reference_magnitude_vs_k.png")
+
+    # F2: cutoff error vs linear score, one point per ok model.
+    fig, ax = plt.subplots()
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        score = _num((rec.get("linear") or {}).get("linear_score"))
+        err = _num(_measured(rec, "fc1000.0_os0").get("cutoff_3db_error_cents"))
+        if score is not None and err is not None:
+            ax.scatter(score, err, label=name)
+    ax.set_xlabel("linear score")
+    ax.set_ylabel("cutoff error (cents)")
+    ax.set_title(fig_caption("F2", fc=1000, K="calibrated", f_s=SAMPLE_RATE, level=-6))
+    legend(ax)
+    save(fig, "F2_cutoff_error_vs_score.png")
+
+    # F3: harmonic spectrum at -6 dBFS, oracle plus models.
+    fig, ax = plt.subplots()
+    # The oracle profile is identical in every model's case; draw it once, from
+    # the first ok model that carries the case.
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        c = _case(rec, "fc1000.0_lvl-6.0_os0") or {}
+        prof = c.get("harmonic_profile_db_oracle")
+        if prof:
+            ax.plot(range(1, len(prof) + 1), prof, color="k", linestyle="--", label="oracle")
+            break
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        c = _case(rec, "fc1000.0_lvl-6.0_os0") or {}
+        prof = c.get("harmonic_profile_db_model")
+        if prof:
+            ax.plot(range(1, len(prof) + 1), prof, label=name)
+    ax.set_xlabel("harmonic order")
+    ax.set_ylabel("dBFS")
+    ax.set_title(fig_caption("F3", fc=1000, K=2, f_s=SAMPLE_RATE, level=-6))
+    legend(ax)
+    save(fig, "F3_harmonic_spectrum.png")
+
+    # F4: THD vs level, model lines plus oracle line.
+    fig, ax = plt.subplots()
+    model_thd = {}
+    oracle_by_level = {}
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        model_thd.setdefault(name, [])
+        for level in LEVELS_DBFS:
+            c = _case(rec, f"fc1000.0_lvl{level}_os0") or {}
+            t = _num(c.get("thd_model_percent"))
+            if t is not None:
+                model_thd[name].append((level, t))
+            o = _num(c.get("thd_oracle_percent"))
+            if o is not None:
+                oracle_by_level[level] = o
+    for name, pts in model_thd.items():
+        if pts:
+            pts.sort()
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", label=name)
+    oracle_pts = sorted(oracle_by_level.items())
+    if oracle_pts:
+        ax.plot([p[0] for p in oracle_pts], [p[1] for p in oracle_pts],
+                color="k", linestyle="--", label="oracle")
+    ax.set_xlabel("level (dBFS)")
+    ax.set_ylabel("THD (%)")
+    ax.set_title(fig_caption("F4", fc=1000, K=2, f_s=SAMPLE_RATE, level="5 levels"))
+    legend(ax)
+    save(fig, "F4_thd_vs_level.png")
+
+    # F5: spectral distance vs fc at one level, one line per model.
+    fig, ax = plt.subplots()
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        pts = []
+        for fc in DEFAULT_CUTOFFS:
+            c = _case(rec, f"fc{fc}_lvl-6.0_os0") or {}
+            d = _num(c.get("spectral_distance_db"))
+            if d is not None:
+                pts.append((fc, d))
+        if pts:
+            pts.sort()
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", label=name)
+    ax.set_xscale("log")
+    ax.set_xlabel("fc (Hz)")
+    ax.set_ylabel("spectral distance (dB)")
+    ax.set_title(fig_caption("F5", fc="3 cutoffs", K="calibrated", f_s=SAMPLE_RATE, level=-6))
+    legend(ax)
+    save(fig, "F5_spectral_distance_vs_fc.png")
+
+    # F6: linear vs nonlinear score bars, sorted by combined.
+    fig, ax = plt.subplots()
+    bars = []
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        lin = _num((rec.get("linear") or {}).get("linear_score"))
+        nlin = _num((rec.get("nonlinear") or {}).get("nonlinear_score"))
+        if lin is None or nlin is None:
+            continue
+        bars.append((name, lin, nlin,
+                     COMBINED_WEIGHT_LINEAR * lin + (1 - COMBINED_WEIGHT_LINEAR) * nlin))
+    bars.sort(key=lambda b: b[3], reverse=True)
+    x = np.arange(len(bars))
+    if bars:
+        ax.bar(x - 0.2, [b[1] for b in bars], 0.4, label="linear")
+        ax.bar(x + 0.2, [b[2] for b in bars], 0.4, label="nonlinear")
+        ax.set_xticks(x)
+        ax.set_xticklabels([b[0] for b in bars], rotation=30, ha="right", fontsize="small")
+        ax.set_ylim(0, 100)
+        ax.legend()
+    ax.set_ylabel("score (0-100)")
+    ax.set_title(fig_caption("F6", fc="all", K="calibrated/2", f_s=SAMPLE_RATE, level="mixed"))
+    save(fig, "F6_score_bars.png")
+
+    assert len(written) == 6, f"expected 6 figures, got {len(written)}"
+    return written
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -1108,6 +1325,8 @@ def main(argv=None):
     ap.add_argument("--out-dir", default=str(Path("filter_validation/faithfulness") / _timestamp()))
     ap.add_argument("--ref-only", action="store_true", help="only rebuild the oracle / references")
     ap.add_argument("--no-run", action="store_true", help="skip external binary runs")
+    ap.add_argument("--write-figs", default=None,
+                    help="directory for the six fixed figures (default: write none)")
     args = ap.parse_args(argv)
 
     ld = {
@@ -1146,6 +1365,7 @@ def main(argv=None):
         )
 
     write_errors = 0
+    records = {}
     for name in names:
         record = {
             "model": name,
@@ -1173,6 +1393,14 @@ def main(argv=None):
             record["status"] = "flagged"
         if _write_record(_record_path(metrics_dir, name), ld, record):
             write_errors += 1
+        records[name] = record
+
+    # The figures are a rendering of these records, not a second measurement, so
+    # they come from the same dicts the JSON was written from. Unknown names
+    # contribute an error record already and are skipped by the figures' own
+    # status gate.
+    if args.write_figs:
+        generate_figures(records, args.write_figs)
 
     # Nonzero when the run did not do what it was asked to: a name that does not
     # exist, or a record that could not be written. A shell caller that checks
