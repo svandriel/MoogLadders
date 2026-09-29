@@ -696,3 +696,129 @@ def score_linear(metrics, weights=LINEAR_WEIGHTS):
         total += weight * normalize_error(metrics[key], best, worst)
         wsum += weight
     return 100.0 * total / wsum if wsum > 0.0 else 0.0
+
+
+def align_signals(model, oracle_y, fs, max_lag=256):
+    """Remove DC offset, bulk delay, and a single constant gain error from model.
+
+    Cross-correlates the two signals, shifts by the integer lag maximizing
+    correlation, then rescales so the least-squares gain is 1. Returns both
+    signals trimmed to a common length.
+
+    The DC removal is done twice on purpose. De-meaning first keeps the
+    correlation honest; de-meaning again after the trim is what makes the
+    returned pair comparable, because the trim leaves each signal centred on
+    its own window rather than the common one. A delay that drops a partial
+    cycle off the front leaves a residual offset of a few times 1e-4 that no
+    gain correction can remove, and that is larger than the tolerance a delay
+    alignment is supposed to meet.
+    """
+    model = np.asarray(model, dtype=np.float64)
+    oracle_y = np.asarray(oracle_y, dtype=np.float64)
+    model = model - model.mean()
+    oracle_y = oracle_y - oracle_y.mean()
+
+    n = min(model.size, oracle_y.size)
+    model = model[:n]
+    oracle_y = oracle_y[:n]
+
+    size = 1 << int(np.ceil(np.log2(2 * n)))
+    corr = np.fft.irfft(
+        np.fft.rfft(model, size) * np.conj(np.fft.rfft(oracle_y, size)), size
+    )
+    window = np.concatenate((corr[-(max_lag - 1):], corr[: max_lag + 1]))
+    lag = int(np.argmax(window)) - (max_lag - 1)
+
+    if lag > 0:
+        model = model[lag:]
+        oracle_y = oracle_y[: model.size]
+    elif lag < 0:
+        oracle_y = oracle_y[-lag:]
+        model = model[: oracle_y.size]
+
+    model = model - model.mean()
+    oracle_y = oracle_y - oracle_y.mean()
+
+    denom = float(np.dot(oracle_y, oracle_y))
+    if denom > 0.0:
+        model = model / (float(np.dot(model, oracle_y)) / denom)
+    return model, oracle_y
+
+
+def time_domain_nrmse(a, b):
+    """Root mean square error normalized by the reference RMS."""
+    n = min(len(a), len(b))
+    a = np.asarray(a[:n], dtype=float)
+    b = np.asarray(b[:n], dtype=float)
+    rms = float(np.sqrt(np.mean(b * b)))
+    return float(np.sqrt(np.mean((a - b) ** 2)) / rms) if rms > 0.0 else float("inf")
+
+
+def spectral_distance_db(a, b, fs, f_min=20.0, f_max=None):
+    """RMS log-magnitude difference between two signals, dB, band-limited."""
+    if f_max is None:
+        f_max = BAND_LIMIT_FRACTION * fs
+    n = min(len(a), len(b))
+    win = np.hanning(n)
+    fa = np.abs(np.fft.rfft(np.asarray(a[:n], dtype=float) * win))
+    fb = np.abs(np.fft.rfft(np.asarray(b[:n], dtype=float) * win))
+    f = np.fft.rfftfreq(n, 1.0 / fs)
+    band = (f >= f_min) & (f <= f_max)
+    floor = max(float(np.max(fb[band])) * 1e-6, 1e-30)
+    da = 20.0 * np.log10(np.maximum(fa[band], floor))
+    db_ = 20.0 * np.log10(np.maximum(fb[band], floor))
+    return float(np.sqrt(np.mean((da - db_) ** 2)))
+
+
+def harmonic_profile_db(x, fs, orders=10):
+    """Amplitude of harmonics 1..orders relative to the fundamental, in dB."""
+    f0 = fundamental_freq(x, fs)
+    return np.array([
+        20.0 * np.log10(max(goertzel_amplitude(x, fs, h * f0) /
+                            max(goertzel_amplitude(x, fs, f0), 1e-30), 1e-30))
+        for h in range(1, orders + 1)
+    ])
+
+
+def nonlinear_metrics(model, oracle_y, fs):
+    """Model-vs-oracle metrics on one aligned test case."""
+    a, b = align_signals(model, oracle_y, fs)
+    thd_m, thd_o = thd_percent(a, fs), thd_percent(b, fs)
+    prof_m, prof_o = harmonic_profile_db(a, fs), harmonic_profile_db(b, fs)
+    corr = float(np.corrcoef(prof_m, prof_o)[0, 1]) if len(prof_m) > 1 else 0.0
+    return {
+        "spectral_distance_db": spectral_distance_db(a, b, fs),
+        "time_domain_nrmse": time_domain_nrmse(a, b),
+        "thd_delta_db": abs(20.0 * np.log10(max(thd_m, 1e-9) / max(thd_o, 1e-9))),
+        "harmonic_profile_corr": corr if np.isfinite(corr) else 0.0,
+        "thd_model_percent": thd_m,
+        "thd_oracle_percent": thd_o,
+        "harmonic_profile_db_model": prof_m.tolist(),
+        "harmonic_profile_db_oracle": prof_o.tolist(),
+    }
+
+
+# metric name -> (best, worst, weight). For harmonic_profile_corr best=1.0,
+# scored as the error (1 - corr) so higher correlation scores higher.
+NONLINEAR_WEIGHTS = {
+    "spectral_distance_db": (0.0, 12.0, 0.35),
+    "time_domain_nrmse": (0.0, 0.9, 0.25),
+    "thd_delta_db": (0.0, 18.0, 0.25),
+    "harmonic_profile_corr": (0.0, 1.0, 0.15),
+}
+
+
+def score_nonlinear(metrics):
+    """Weighted 0..100 nonlinear score against the oracle."""
+    total = 0.0
+    wsum = 0.0
+    for key, (best, worst, weight) in NONLINEAR_WEIGHTS.items():
+        if key not in metrics:
+            continue
+        if key == "harmonic_profile_corr":
+            part = normalize_error(1.0 - metrics[key], 0.0, 1.0)
+        else:
+            part = normalize_error(metrics[key], best, worst)
+        total += weight * part
+        wsum += weight
+    return 100.0 * total / wsum if wsum > 0.0 else 0.0

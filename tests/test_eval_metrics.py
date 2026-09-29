@@ -760,3 +760,91 @@ def test_linear_score_treats_signed_errors_symmetrically():
         fe.score_linear(with_cents(400.0))
     )
     assert fe.score_linear(with_cents(-50.0)) > fe.score_linear(with_cents(-400.0))
+
+
+def test_align_signals_removes_constant_delay():
+    fs = 44100
+    t = np.arange(44100) / fs
+    ref = np.sin(2 * np.pi * 1000 * t)
+    delayed = np.concatenate([np.zeros(64), ref[:-64]])
+    a, b = fe.align_signals(delayed, ref, fs)
+    assert fe.time_domain_nrmse(a, b) < 1e-9
+
+
+def test_align_signals_removes_constant_gain_error():
+    fs = 44100
+    t = np.arange(44100) / fs
+    ref = np.sin(2 * np.pi * 1000 * t)
+    a, b = fe.align_signals(ref * 2.5, ref, fs)
+    assert fe.time_domain_nrmse(a, b) < 1e-9
+
+
+def test_align_signals_preserves_real_differences():
+    """Alignment must not be able to erase a genuine spectral difference."""
+    fs = 44100
+    t = np.arange(44100) / fs
+    ref = np.sin(2 * np.pi * 1000 * t)
+    other = ref + 0.2 * np.sin(2 * np.pi * 3000 * t)
+    a, b = fe.align_signals(other, ref, fs)
+    assert fe.time_domain_nrmse(a, b) > 0.01
+
+
+def test_spectral_distance_identical_is_zero():
+    fs = 44100
+    t = np.arange(44100) / fs
+    x = np.sin(2 * np.pi * 1000 * t)
+    assert fe.spectral_distance_db(x, x, fs) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_spectral_distance_grows_with_added_harmonic():
+    fs = 44100
+    t = np.arange(44100) / fs
+    a = np.sin(2 * np.pi * 1000 * t)
+    small = a + 0.1 * np.sin(2 * np.pi * 2000 * t)
+    large = a + 0.5 * np.sin(2 * np.pi * 2000 * t)
+    ds, dl = fe.spectral_distance_db(a, small, fs), fe.spectral_distance_db(a, large, fs)
+    assert 0.0 < ds < dl
+
+
+def test_harmonic_profile_is_relative_to_fundamental():
+    fs = 44100
+    t = np.arange(88200) / fs
+    x = np.sin(2 * np.pi * 1000 * t) + 0.1 * np.sin(2 * np.pi * 3000 * t)
+    prof = fe.harmonic_profile_db(x, fs)
+    assert prof[0] == pytest.approx(0.0, abs=0.5)
+    assert prof[2] == pytest.approx(-20.0, abs=0.5)
+
+
+def test_nonlinear_score_bounded_and_orders_correctly():
+    near = {"spectral_distance_db": 0.5, "time_domain_nrmse": 0.01,
+            "thd_delta_db": 0.5, "harmonic_profile_corr": 0.99}
+    far = {"spectral_distance_db": 12.0, "time_domain_nrmse": 0.9,
+           "thd_delta_db": 18.0, "harmonic_profile_corr": 0.2}
+    assert fe.score_nonlinear(near) > fe.score_nonlinear(far)
+    assert 0.0 <= fe.score_nonlinear(far) <= 100.0
+
+
+def test_nonlinear_score_corr_axis_discriminates():
+    """The corr axis must not grant full credit to every correlation.
+
+    (Controller-verified brief defect: scoring corr via a swapped
+    normalize_error(corr, 1.0, 0.0) hits the `value <= best` clamp and
+    returns 1.0 for ANY correlation <= 1.0, deadweighting the 0.15 axis.)
+    """
+    near = {"spectral_distance_db": 2.0, "time_domain_nrmse": 0.1,
+            "thd_delta_db": 2.0, "harmonic_profile_corr": 0.99}
+    far = {"spectral_distance_db": 2.0, "time_domain_nrmse": 0.1,
+           "thd_delta_db": 2.0, "harmonic_profile_corr": 0.2}
+    assert fe.score_nonlinear(near) > fe.score_nonlinear(far)
+    # The brief wrote this case as dict(far, harmonic_profile_corr=-0.5) and
+    # asserted a total of exactly 0, which needs the other three axes at their
+    # worst values. far's 2.0/0.1/2.0 are mid-range against 12.0/0.9/18.0, so
+    # that total is 73.6, not 0. Pinning the worst values here is what actually
+    # isolates the corr axis: an anticorrelation must contribute exactly nothing.
+    worst = {"spectral_distance_db": 12.0, "time_domain_nrmse": 0.9,
+             "thd_delta_db": 18.0}
+    negative = dict(worst, harmonic_profile_corr=-0.5)
+    assert fe.score_nonlinear(negative) == 0.0
+    # ...and a perfect correlation on an otherwise-worst model contributes
+    # exactly its 0.15 weight share, no more.
+    assert fe.score_nonlinear(dict(worst, harmonic_profile_corr=1.0)) == 15.0
