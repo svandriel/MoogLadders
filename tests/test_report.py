@@ -47,8 +47,9 @@ def _record(status="ok", **overrides):
                     "spectral_distance_db": 3.4,
                     "thd_model_percent": 0.05,
                     "thd_oracle_percent": 0.02,
-                    "harmonic_profile_db_model": [-20.0] * 10,
-                    "harmonic_profile_db_oracle": [-30.0] * 10,
+                    # H1 is the fundamental against itself: 0.0 dB, or the profile is not dB re H1.
+                    "harmonic_profile_db_model": [0.0] + [-20.0] * 9,
+                    "harmonic_profile_db_oracle": [0.0] + [-30.0] * 9,
                 },
             },
             "nonlinear_score": 48.0,
@@ -78,6 +79,7 @@ def _captured_axes(monkeypatch, tmp_path, recs):
             "ylabel": ax.get_ylabel(),
             "title": ax.get_title(),
             "labels": [line.get_label() for line in ax.get_lines()],
+            "ydata": [list(line.get_ydata()) for line in ax.get_lines()],
         }
 
     monkeypatch.setattr(matplotlib.figure.Figure, "savefig", fake_savefig)
@@ -87,6 +89,158 @@ def _captured_axes(monkeypatch, tmp_path, recs):
         plt.close("all")
     assert len(seen) == 6, sorted(seen)
     return seen
+
+
+F3_CASE = "fc1000.0_lvl-6.0_os0"
+ORACLE_PROFILE_FIELD = "harmonic_profile_db_oracle"
+ORACLE_THD_FIELD = "thd_oracle_percent"
+
+
+def _with_cases(model, oracle_profile, oracle_thd, model_profile=None, score=50.0):
+    """A record carrying all five -6 dBFS-ish levels, with oracle values of its own."""
+    cases = {}
+    for i, level in enumerate(fe.LEVELS_DBFS):
+        cases[f"fc1000.0_lvl{level}_os0"] = {
+            "spectral_distance_db": 3.0 + i,
+            "thd_model_percent": 1.0 + i,
+            "thd_oracle_percent": oracle_thd[i],
+            "harmonic_profile_db_model": list(model_profile or oracle_profile),
+            "harmonic_profile_db_oracle": list(oracle_profile),
+        }
+    return _record(model=model,
+                   nonlinear={"cases": cases, "nonlinear_score": score},
+                   linear={"measured": {"fc1000.0_os0": {"cutoff_3db_error_cents": -25.0}},
+                           "linear_score": score})
+
+
+def test_oracle_pick_walks_model_names_order_not_insertion_order():
+    """The oracle on a record is model-aligned, so there is no one true oracle.
+
+    nonlinear_metrics runs the oracle through align_signals, whose shift comes
+    from cross-correlating the model, so the same input yields a different oracle
+    THD and harmonic profile on every model: in the committed run, H2 at -6 dBFS
+    ranges from -67.94 dB on Stilson to -73.78 dB on Improved. Picking "the first
+    record in the dict" makes which oracle gets drawn a property of the caller's
+    dict order, and the committed F3 and F4 were drawn from different models while
+    both said "oracle".
+    """
+    stilson = _with_cases("Stilson", [-67.94] + [-80.0] * 9, [12.98] * 5)
+    musicdsp = _with_cases("MusicDSP", [-72.96] + [-90.0] * 9, [13.01] * 5)
+    forward = {"Stilson": stilson, "MusicDSP": musicdsp}
+    backward = dict(reversed(list(forward.items())))
+
+    for recs in (forward, backward):
+        assert fe._oracle_pick(recs, F3_CASE, ORACLE_PROFILE_FIELD) == [-67.94] + [-80.0] * 9
+        assert fe._oracle_pick(recs, F3_CASE, ORACLE_THD_FIELD) == 12.98
+    assert fe._oracle_source(forward) == "Stilson"
+    assert fe._oracle_source(backward) == "Stilson"
+
+
+def test_oracle_pick_skips_models_that_measured_nothing():
+    """No usable oracle is no oracle line, not a drawn NaN and a legend entry."""
+    nan_rec = _with_cases("Stilson", [float("nan")] * 10, [float("nan")] * 5)
+    assert fe._oracle_pick({"Stilson": nan_rec}, F3_CASE, ORACLE_PROFILE_FIELD) is None
+    assert fe._oracle_pick({"Stilson": nan_rec}, F3_CASE, ORACLE_THD_FIELD) is None
+    assert fe._oracle_source({"Stilson": nan_rec}) is None
+
+    flagged = _with_cases("Stilson", [-67.94] + [-80.0] * 9, [12.98] * 5)
+    flagged["status"] = "flagged"
+    assert fe._oracle_pick({"Stilson": flagged}, F3_CASE, ORACLE_PROFILE_FIELD) is None
+    assert fe._oracle_source({"Stilson": flagged}) is None
+
+    errored = _with_cases("Stilson", [-67.94] + [-80.0] * 9, [12.98] * 5)
+    errored["nonlinear"] = None
+    assert fe._oracle_pick({"Stilson": errored}, F3_CASE, ORACLE_PROFILE_FIELD) is None
+
+    assert fe._oracle_pick({}, F3_CASE, ORACLE_PROFILE_FIELD) is None
+    assert fe._oracle_source({}) is None
+    # A named model with nothing on it does not fall back to another model.
+    assert fe._oracle_pick({"MusicDSP": _with_cases("MusicDSP", [-72.96] + [-90.0] * 9, [13.01] * 5)},
+                           F3_CASE, ORACLE_PROFILE_FIELD, model="Stilson") is None
+
+
+def test_f3_and_f4_draw_the_same_models_oracle(monkeypatch, tmp_path):
+    """One oracle, chosen once, for both figures that draw one."""
+    recs = {
+        "Improved": _with_cases("Improved", [-73.78] + [-95.0] * 9, [12.96] * 5),
+        "Stilson": _with_cases("Stilson", [-67.94] + [-80.0] * 9, [12.98] * 5),
+    }
+    assert fe._oracle_source(recs) == "Stilson"
+
+    seen = _captured_axes(monkeypatch, tmp_path, recs)
+    f3 = seen["F3_harmonic_spectrum.png"]
+    assert f3["ydata"][f3["labels"].index("oracle")] == [-67.94] + [-80.0] * 9
+    f4 = seen["F4_thd_vs_level.png"]
+    assert f4["ydata"][f4["labels"].index("oracle")] == [12.98] * 5
+
+    # When the enum-first model measured no oracle at all, both figures move to
+    # the next one together rather than one of them keeping a stale line.
+    for level in fe.LEVELS_DBFS:
+        case = recs["Stilson"]["nonlinear"]["cases"][f"fc1000.0_lvl{level}_os0"]
+        case[ORACLE_PROFILE_FIELD] = [float("nan")] * 10
+        case[ORACLE_THD_FIELD] = float("nan")
+    assert fe._oracle_source(recs) == "Improved"
+    seen = _captured_axes(monkeypatch, tmp_path, recs)
+    f3 = seen["F3_harmonic_spectrum.png"]
+    assert f3["ydata"][f3["labels"].index("oracle")] == [-73.78] + [-95.0] * 9
+    f4 = seen["F4_thd_vs_level.png"]
+    assert f4["ydata"][f4["labels"].index("oracle")] == [12.96] * 5
+
+
+def test_the_oracle_source_speaks_for_a_figure_it_cannot_serve(monkeypatch, tmp_path):
+    """A model with oracle THD but no profile at the F3 case still speaks for it.
+
+    Moving the source to another model for one figure is the bug this pass fixed,
+    so the source stays put and F3 draws no oracle line instead. A missing line is
+    a gap; a second "oracle" is a contradiction.
+    """
+    recs = {
+        "Stilson": _with_cases("Stilson", [-67.94] + [-80.0] * 9, [12.98] * 5),
+        "Improved": _with_cases("Improved", [-73.78] + [-95.0] * 9, [12.96] * 5),
+    }
+    recs["Stilson"]["nonlinear"]["cases"][F3_CASE][ORACLE_PROFILE_FIELD] = [float("nan")] * 10
+    assert fe._oracle_source(recs) == "Stilson"
+
+    seen = _captured_axes(monkeypatch, tmp_path, recs)
+    f3 = seen["F3_harmonic_spectrum.png"]
+    assert "oracle" not in f3["labels"], f3["labels"]
+    f4 = seen["F4_thd_vs_level.png"]
+    assert f4["ydata"][f4["labels"].index("oracle")] == [12.98] * 5
+
+
+def test_no_oracle_line_when_no_model_measured_one(monkeypatch, tmp_path):
+    nan_rec = _with_cases("Stilson", [float("nan")] * 10, [float("nan")] * 5)
+    seen = _captured_axes(monkeypatch, tmp_path, {"Stilson": nan_rec})
+    for name in ("F3_harmonic_spectrum.png", "F4_thd_vs_level.png"):
+        assert "oracle" not in seen[name]["labels"], seen[name]["labels"]
+
+
+def test_figures_are_byte_identical_whatever_the_record_order(tmp_path):
+    """The same records must produce the same bytes, whoever assembles the dict.
+
+    main builds records in MODEL_NAMES order; a script that reads the metrics
+    directory back builds them in filename order. Both are the same twelve
+    measurements, and a figure set whose colors and oracle depend on which one ran
+    is not reproducible from the committed PNGs.
+    """
+    import hashlib
+
+    names = ["MusicDSP", "Stilson", "Huovilainen", "Improved", "RKSimulation"]
+    recs = {
+        name: _with_cases(name, [-60.0 - i] + [-90.0] * 9, [12.0 + i] * 5,
+                          model_profile=[-70.0 - i] + [-91.0] * 9, score=40.0 + 5 * i)
+        for i, name in enumerate(names)
+    }
+    forward, backward = tmp_path / "fwd", tmp_path / "bwd"
+    fe.generate_figures(recs, forward)
+    fe.generate_figures(dict(reversed(list(recs.items()))), backward)
+    for path in sorted(forward.glob("*.png")):
+        other = backward / path.name
+        assert path.read_bytes() == other.read_bytes(), (
+            path.name,
+            hashlib.sha256(path.read_bytes()).hexdigest()[:12],
+            hashlib.sha256(other.read_bytes()).hexdigest()[:12],
+        )
 
 
 def test_f3_axis_is_relative_to_the_fundamental(monkeypatch, tmp_path):
@@ -99,6 +253,11 @@ def test_f3_axis_is_relative_to_the_fundamental(monkeypatch, tmp_path):
     """
     seen = _captured_axes(monkeypatch, tmp_path, {"A": _record()})
     assert seen["F3_harmonic_spectrum.png"]["ylabel"] == "dB re H1"
+    # The premise the label rests on, asserted on a record rather than asserted
+    # in a docstring: the first entry is the fundamental against itself.
+    rec = _record()
+    for field in (ORACLE_PROFILE_FIELD, "harmonic_profile_db_model"):
+        assert rec["nonlinear"]["cases"][F3_CASE][field][0] == 0.0
 
 
 def test_titles_name_the_figure_instead_of_repeating_the_tag(monkeypatch, tmp_path):
@@ -139,6 +298,14 @@ def test_captions_state_only_the_operating_points_the_data_has(monkeypatch, tmp_
         assert calls[tag].get("level") is not None, calls[tag]
     for tag, op in calls.items():
         assert op.get("f_s") == fe.SAMPLE_RATE, op
+    # F3 and F4 compare the model at absolute k=2.0, which is the operating point
+    # collect_nonlinear holds fixed, so the caption has to say so. F1 and F2 sweep
+    # k or use the calibrated r, and F5/F6 span cases; naming one number there
+    # would be the same fabrication as naming a level they do not have.
+    for tag in ("F3", "F4"):
+        assert calls[tag].get("K") == 2, calls[tag]
+    for tag in ("F1", "F2", "F5", "F6"):
+        assert calls[tag].get("K") != 2, calls[tag]
 
 
 def test_harmonic_profile_drops_nan_profiles():
@@ -150,14 +317,14 @@ def test_harmonic_profile_drops_nan_profiles():
     """
     key = "fc1000.0_lvl-6.0_os0"
     field = "harmonic_profile_db_model"
-    assert fe._harmonic_profile(_record(), key, field) == [-20.0] * 10
+    assert fe._harmonic_profile(_record(), key, field) == [0.0] + [-20.0] * 9
 
     nan_rec = _record()
     nan_rec["nonlinear"]["cases"][key][field] = [float("nan")] * 10
     assert fe._harmonic_profile(nan_rec, key, field) is None
 
     one_bad = _record()
-    one_bad["nonlinear"]["cases"][key][field] = [-20.0] * 9 + [None]
+    one_bad["nonlinear"]["cases"][key][field] = [0.0] + [-20.0] * 8 + [None]
     assert fe._harmonic_profile(one_bad, key, field) is None
 
     assert fe._harmonic_profile(_record(), key, "missing_field") is None

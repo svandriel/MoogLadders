@@ -846,6 +846,9 @@ def score_nonlinear(metrics):
 
 
 LEVELS_DBFS = (-24.0, -18.0, -12.0, -6.0, -3.0)
+# The case the oracle baseline is drawn at: F3's harmonic profile comes from it
+# and it is one of the five levels F4's oracle THD series reads.
+ORACLE_CASE = "fc1000.0_lvl-6.0_os0"
 SWEEP_N = 131072
 IMPULSE_N = 32768
 DEFAULT_CUTOFFS = (100.0, 1000.0, 5000.0)
@@ -1191,16 +1194,78 @@ def _harmonic_profile(rec, key, field):
     return list(prof)
 
 
+def _ordered_names(records):
+    """Model names in the enum's order, then any name the enum does not carry.
+
+    Not decoration: matplotlib hands out colors in the order artists are created,
+    so the same twelve records assembled in a different dict order produce
+    different bytes. main builds records in MODEL_NAMES order and a script reading
+    the metrics directory back builds them in filename order, and both are the
+    same twelve measurements.
+    """
+    known = [name for name in MODEL_NAMES if name in records]
+    extra = sorted(name for name in records if name not in MODEL_NAMES)
+    return known + extra
+
+
+def _oracle_pick(records, case_key, field, model=None):
+    """One model's oracle value for one case, or None if nobody measured it.
+
+    There is no oracle to read off any record in general. nonlinear_metrics runs
+    the oracle through align_signals, whose shift is chosen by cross-correlating
+    THE MODEL, so the same input leaves a different oracle on every model: H2 at
+    -6 dBFS runs from -67.94 dB on Stilson to -73.78 dB on Improved in the
+    committed run. model=None means "first ok model in enum order with a finite
+    value"; generate_figures passes the name _oracle_source returned, so F3 and F4
+    draw one model's oracle rather than two models' under one label.
+    """
+    names = [model] if model is not None else _ordered_names(records)
+    for name in names:
+        rec = records.get(name)
+        if rec is None or not _ok(rec):
+            continue
+        value = (_case(rec, case_key) or {}).get(field)
+        if isinstance(value, (list, tuple)):
+            if value and all(_num(v) is not None for v in value):
+                return list(value)
+        elif _num(value) is not None:
+            return float(value)
+    return None
+
+
+def _oracle_source(records):
+    """The one model whose oracle F3 and F4 draw, or None.
+
+    Chosen once, by enum order, and only among models that actually carry an
+    oracle at one of the levels the figures read. Picking per figure instead is
+    what produced two different "oracle" lines in one commit: F3 took the first
+    record in dict order and F4 the last, and both said oracle.
+    """
+    for name in _ordered_names(records):
+        rec = records[name]
+        if not _ok(rec):
+            continue
+        if _harmonic_profile(rec, ORACLE_CASE, "harmonic_profile_db_oracle"):
+            return name
+        for level in LEVELS_DBFS:
+            if _num((_case(rec, f"fc1000.0_lvl{level}_os0") or {}).get("thd_oracle_percent")) is not None:
+                return name
+    return None
+
+
 def _score_bars(records):
     """(name, linear, nonlinear, combined) per rankable model, best combined first.
 
     A model enters only with both axes measured. One axis alone would be a bar
     scored out of 100 on an axis nobody looked at, and a flagged model has no
     ranking entry at all however good its survivors look: the flag is what says
-    the number does not stand for the model.
+    the number does not stand for the model. Iteration follows _ordered_names so
+    that two models on the same combined score keep the same order in every
+    caller, not the caller's dict order.
     """
     bars = []
-    for name, rec in records.items():
+    for name in _ordered_names(records):
+        rec = records[name]
         if not _ok(rec):
             continue
         lin = _num((rec.get("linear") or {}).get("linear_score"))
@@ -1232,6 +1297,14 @@ def generate_figures(records, out_dir):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
+    # One iteration order for the whole function, so the same records give the
+    # same bytes however the caller assembled the dict.
+    records = {name: records[name] for name in _ordered_names(records)}
+    # The oracle is model-aligned, so one model is chosen to speak for it and both
+    # figures that draw one read that same model. Neither, when nobody measured it.
+    oracle_model = _oracle_source(records)
+    oracle_prof = _oracle_pick(records, ORACLE_CASE, "harmonic_profile_db_oracle",
+                               model=oracle_model)
 
     def legend(ax):
         if ax.get_legend_handles_labels()[0]:
@@ -1278,19 +1351,18 @@ def generate_figures(records, out_dir):
 
     # F3: harmonic spectrum at -6 dBFS, oracle plus models.
     fig, ax = plt.subplots()
-    # The oracle profile is identical in every model's case; draw it once, from
-    # the first ok model that carries the case.
+    # The oracle is not the same on every record: align_signals shifts it by the
+    # model's own cross-correlation, so H2 at this case ranges over 6 dB across the
+    # twelve models. One representative oracle is drawn, from the enum-first ok
+    # model that carries a finite one, and that is the same model F4's oracle
+    # THD comes from.
+    if oracle_prof:
+        ax.plot(range(1, len(oracle_prof) + 1), oracle_prof,
+                color="k", linestyle="--", label="oracle")
     for name, rec in records.items():
         if not _ok(rec):
             continue
-        prof = _harmonic_profile(rec, "fc1000.0_lvl-6.0_os0", "harmonic_profile_db_oracle")
-        if prof:
-            ax.plot(range(1, len(prof) + 1), prof, color="k", linestyle="--", label="oracle")
-            break
-    for name, rec in records.items():
-        if not _ok(rec):
-            continue
-        prof = _harmonic_profile(rec, "fc1000.0_lvl-6.0_os0", "harmonic_profile_db_model")
+        prof = _harmonic_profile(rec, ORACLE_CASE, "harmonic_profile_db_model")
         if prof:
             ax.plot(range(1, len(prof) + 1), prof, label=name)
     ax.set_xlabel("harmonic order")
@@ -1304,7 +1376,13 @@ def generate_figures(records, out_dir):
     # F4: THD vs level, model lines plus oracle line.
     fig, ax = plt.subplots()
     model_thd = {}
-    oracle_by_level = {}
+    # Same source model as F3's oracle: one oracle across the figure set.
+    oracle_thd = []
+    for level in LEVELS_DBFS:
+        o = _oracle_pick(records, f"fc1000.0_lvl{level}_os0", "thd_oracle_percent",
+                         model=oracle_model)
+        if o is not None:
+            oracle_thd.append((level, o))
     for name, rec in records.items():
         if not _ok(rec):
             continue
@@ -1314,16 +1392,13 @@ def generate_figures(records, out_dir):
             t = _num(c.get("thd_model_percent"))
             if t is not None:
                 model_thd[name].append((level, t))
-            o = _num(c.get("thd_oracle_percent"))
-            if o is not None:
-                oracle_by_level[level] = o
     for name, pts in model_thd.items():
         if pts:
             pts.sort()
             ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", label=name)
-    oracle_pts = sorted(oracle_by_level.items())
-    if oracle_pts:
-        ax.plot([p[0] for p in oracle_pts], [p[1] for p in oracle_pts],
+    if oracle_thd:
+        oracle_thd.sort()
+        ax.plot([p[0] for p in oracle_thd], [p[1] for p in oracle_thd],
                 color="k", linestyle="--", label="oracle")
     ax.set_xlabel("level (dBFS)")
     ax.set_ylabel("THD (%)")
