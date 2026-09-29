@@ -304,12 +304,18 @@ Format is PNG at roughly 200 dpi, total committed figure size budgeted at 2 to 3
 
 | id | figure | purpose |
 | --- | --- | --- |
-| F1 | magnitude response, all 12 plus analytic `H(s)`, faceted at K=0, 2, 4 | headline shape accuracy |
-| F2 | peak gain versus K, all 12 plus reference | k to Q law and tuning quality |
+| F1 | analytic reference magnitude versus k (at one fc) | headline shape target |
+| F2 | cutoff error in cents versus linear score, one dot per model | tuning quality against the verdict |
 | F3 | harmonic spectrum at -6 dBFS, oracle plus models | nonlinear character |
-| F4 | THD versus input level, oracle line plus extremes | level dependence |
-| F5 | self-oscillation onset, amplitude and frequency versus K near 4 | where models diverge most |
+| F4 | THD versus input level, model lines plus the oracle line | level dependence |
+| F5 | spectral distance versus fc at one level, one line per model | fc dependence of nonlinear error |
 | F6 | linear versus nonlinear score bars per model | the verdict, visually |
+
+Revision note (Task 13 dispatch): the earlier six-figure list required magnitude-response
+and self-oscillation-envelope curves that the collectors do not store, so it was replaced by
+the set above, which is fully drawable from the per-model record schema. F1 keeps an analytic
+only; model magnitude curves remain out of the committed figures (diagnostic plots live in the
+gitignored run directory).
 
 Every caption states its operating point, `fc`, `K`, `fs`, and input level. A ladder response plot
 without those is not interpretable, so captions are part of the deliverable. Each figure carries

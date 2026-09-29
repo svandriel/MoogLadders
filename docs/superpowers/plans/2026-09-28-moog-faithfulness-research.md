@@ -2516,6 +2516,8 @@ def test_generate_figures_writes_six_pngs(tmp_path):
     out = fe.generate_figures({}, tmp_path)
     names = sorted(p.name for p in out)
     assert len(names) == 6, names
+    assert all(p.suffix == ".png" for p in out)
+    assert all(p.stat().st_size > 0 for p in out)
 
 
 def test_figure_caption_states_operating_point():
@@ -2550,18 +2552,34 @@ def fig_caption(tag, **op):
     return f"{base} at ({op_text})"
 ```
 
-F1: reference magnitude vs. k, with the measured `-3 dB` point marked as notch.
-F2: per-model magnitude overlay at the calibrated k for a single fc.
-F3: model-vs-reference cutoff error in cents, sorted by linear score.
-F4: per-model spectral distance vs. fc at one level.
-F5: THD vs. level, one line per model.
-F6: self-oscillation decay envelope at k=4 for models showing ringing.
+The six figures (drawable from the record schema; supersedes the earlier
+magnitude-curve list because the collectors store metrics, not curves):
+
+F1: analytic reference magnitude vs. k at fc=1000 (D'Angelo Part I closed form).
+F2: model-vs-reference cutoff error in cents vs. linear score, one point per model. Errors
+   from the recorded `fc1000.0_os0` case; skip flagged/error models and non-finite values.
+F3: harmonic spectrum at -6 dBFS, oracle line plus one line per model. Bins come from
+   `harmonic_profile_db_model` / `_oracle` (10 entries) of the `fc1000.0_lvl-6.0_os0` case.
+F4: THD vs. input level, one line per model plus the oracle line. `thd_model_percent` /
+   `thd_oracle_percent` across the 5 levels at `fc1000.0_os0`.
+F5: spectral distance vs. fc at one level, one line per model. `spectral_distance_db` of
+   the `lvl-6.0_os0` cases at the three cutoffs.
+F6: linear vs. nonlinear score bars per model, sorted by combined score.
 
 ```python
+def _case(rec, key):
+    part = rec.get("nonlinear") or {}
+    return (part.get("cases") or {}).get(key)
+
+
+def _ok(rec):
+    return rec.get("status") == "ok"
+
+
 def generate_figures(records, out_dir):
     """Write exactly the six fixed figures as PNGs. Returns the Path list.
 
-    records: {model_name: per-model JSON dict from the collectors}.
+    records: {model_name: per-model JSON dict from main's collectors}.
     out_dir: where the PNGs land (normally docs/moog-faithfulness/plots).
     """
     import matplotlib
@@ -2586,43 +2604,120 @@ def generate_figures(records, out_dir):
     ax.set_xscale("log"); ax.set_ylabel("dB"); ax.set_xlabel("Hz"); ax.legend()
     save(fig, "F1_reference_magnitude_vs_k.png", 1000, "various", 0)
 
-    # F2: per-model magnitude at the calibrated k, fc=1000 Hz.
-    fig, ax = plt.subplots()
-    resonance = "cal"
-    for i, (name, rec) in enumerate(records.items()):
-        if i == 0:
-            resonance = rec.get("requested", {}).get("resonance", "cal")
-        meas = rec.get("measured", {}).get("fc1000.0_os0", {})
-        if "error" in meas or not meas:
-            continue
-        # store measured responses as metadata in records via Task 14; placeholder
-        # expects generous curves here so the figure is informative once real runs exist.
-        ax.plot([], [])
-    ax.set_xscale("log"); ax.set_ylabel("dB"); ax.set_xlabel("Hz")
-    save(fig, "F2_model_magnitude_overlay.png", 1000, resonance, -6)
-
-    # F3: cutoff error vs linear score.
+    # F2: cutoff error vs linear score, one point per ok model.
     fig, ax = plt.subplots()
     for name, rec in records.items():
-        score = rec.get("linear_score")
-        errors = [m.get("cutoff_3db_error_cents") for m in rec.get("measured", {}).values()
-                  if isinstance(m, dict) and m.get("cutoff_3db_error_cents") is not None]
-        if score is not None and errors:
-            ax.scatter(score, errors[0], label=name)
-    ax.set_xlabel("linear score"); ax.set_ylabel("cutoff error (cents)"); ax.legend()
-    save(fig, "F3_cutoff_error_vs_score.png", 1000, "cal", -6)
+        if not _ok(rec):
+            continue
+        score = (rec.get("linear") or {}).get("linear_score")
+        err = ((rec.get("linear") or {}).get("measured") or {}).get(
+            "fc1000.0_os0", {}).get("cutoff_3db_error_cents")
+        if score is not None and err is not None and np.isfinite(err):
+            ax.scatter(score, err, label=name)
+    ax.set_xlabel("linear score"); ax.set_ylabel("cutoff error (cents)")
+    ax.set_title(fig_caption("F2", fc=1000, K="cal", f_s=SAMPLE_RATE, level=-6))
+    if records: ax.legend(fontsize="small")
+    save(fig, "F2_cutoff_error_vs_score.png", 1000, "cal", -6)
 
-    # F4: per-model spectral distance vs fc.
+    # F3: harmonic spectrum at -6 dBFS, oracle plus models.
     fig, ax = plt.subplots()
-    save(fig, "F4_spectral_distance_vs_fc.png", "all", "cal", -6)
+    # The oracle profile is identical in every model's case; draw it once, from
+    # the first ok model that carries the case.
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        c = _case(rec, "fc1000.0_lvl-6.0_os0")
+        if not c:
+            continue
+        if c.get("harmonic_profile_db_oracle"):
+            n = len(c["harmonic_profile_db_oracle"])
+            ax.plot(range(1, n + 1), c["harmonic_profile_db_oracle"],
+                    color="k", linestyle="--", label="oracle")
+        break
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        c = _case(rec, "fc1000.0_lvl-6.0_os0")
+        if not c:
+            continue
+        prof = c.get("harmonic_profile_db_model")
+        if prof:
+            n = len(prof)
+            ax.plot(range(1, n + 1), prof, label=name)
+    ax.set_xlabel("harmonic order"); ax.set_ylabel("dBFS")
+    ax.set_title(fig_caption("F3", fc=1000, K=2, f_s=SAMPLE_RATE, level=-6))
+    if records: ax.legend(fontsize="small")
+    save(fig, "F3_harmonic_spectrum.png", 1000, 2, -6)
 
-    # F5: THD vs level.
+    # F4: THD vs level, model lines plus oracle line.
     fig, ax = plt.subplots()
-    save(fig, "F5_thd_vs_level.png", "all", "cal", "levels")
+    model_thd = {name: [] for name in records}
+    oracle_by_level = {}
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        for level in LEVELS_DBFS:
+            c = _case(rec, f"fc1000.0_lvl{level}_os0")
+            if not c:
+                continue
+            t = c.get("thd_model_percent")
+            if t is not None:
+                model_thd[name].append((level, t))
+            oracle_by_level[level] = c.get("thd_oracle_percent")
+    for name, pts in model_thd.items():
+        if pts:
+            pts.sort()
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], label=name)
+    o = sorted((l, v) for l, v in oracle_by_level.items() if v is not None)
+    if o:
+        ax.plot([p[0] for p in o], [p[1] for p in o],
+                color="k", linestyle="--", label="oracle")
+    ax.set_xlabel("level (dBFS)"); ax.set_ylabel("THD (%)")
+    ax.set_title(fig_caption("F4", fc=1000, K=2, f_s=SAMPLE_RATE, level="5 levels"))
+    if records: ax.legend(fontsize="small")
+    save(fig, "F4_thd_vs_level.png", 1000, 2, "levels")
 
-    # F6: self-oscillation tail at k=4.
+    # F5: spectral distance vs fc at one level, one line per model.
     fig, ax = plt.subplots()
-    save(fig, "F6_selfosc_tail.png", 1000, 4.0, -6)
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        pts = []
+        for fc in DEFAULT_CUTOFFS:
+            c = _case(rec, f"fc{fc}_lvl-6.0_os0")
+            d = c.get("spectral_distance_db") if c else None
+            if d is not None:
+                pts.append((fc, d))
+        if pts:
+            pts.sort()
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", label=name)
+    ax.set_xscale("log"); ax.set_xlabel("fc (Hz)"); ax.set_ylabel("spectral distance (dB)")
+    ax.set_title(fig_caption("F5", fc="3 cutoffs", K="cal", f_s=SAMPLE_RATE, level=-6))
+    if records: ax.legend(fontsize="small")
+    save(fig, "F5_spectral_distance_vs_fc.png", "all", "cal", -6)
+
+    # F6: linear vs nonlinear score bars, sorted by combined.
+    fig, ax = plt.subplots()
+    bars = []
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        lin = (rec.get("linear") or {}).get("linear_score")
+        nlin = (rec.get("nonlinear") or {}).get("nonlinear_score")
+        if lin is None or nlin is None:
+            continue
+        bars.append((name, lin, nlin,
+                     COMBINED_WEIGHT_LINEAR * lin + (1 - COMBINED_WEIGHT_LINEAR) * nlin))
+    bars.sort(key=lambda b: b[3], reverse=True)
+    names = [b[0] for b in bars]
+    x = np.arange(len(bars))
+    if bars:
+        ax.bar(x - 0.2, [b[1] for b in bars], 0.4, label="linear")
+        ax.bar(x + 0.2, [b[2] for b in bars], 0.4, label="nonlinear")
+    ax.set_xticks(x); ax.set_xticklabels(names, rotation=30, ha="right", fontsize="small")
+    ax.set_ylabel("score (0-100)"); ax.set_ylim(0, 100); ax.legend()
+    ax.set_title(fig_caption("F6", fc="all", K="cal/2", f_s=SAMPLE_RATE, level="mixed"))
+    save(fig, "F6_score_bars.png", "all", "cal/2", "mixed")
 
     assert len(written) == 6, f"expected 6 figures, got {len(written)}"
     return written
@@ -2630,7 +2725,9 @@ def generate_figures(records, out_dir):
 
 - [ ] **Step 5: Wire figures into main
 
-Add a `--write-figs PATH` option to main; call `generate_figures` after collecting.
+Add a `--write-figs PATH` option to main; after collecting, build `records =
+{name: record_dict}` (the same dicts main already writes) and call
+`generate_figures(records, PATH)`.
 
 - [ ] **Step 6: Commit
 
@@ -2640,6 +2737,8 @@ git commit -m "add ranking table and fixed six-figure set"
 ```
 
 Note: the PNGs are committed, so `docs/moog-faithfulness/plots/` must be tracked.
+At Task 13 the committed figures are rendered from available records (possibly
+empty fixture data); Task 14 regenerates them from the real end-to-end run.
 
 ---
 
