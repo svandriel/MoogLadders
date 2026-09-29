@@ -771,13 +771,22 @@ def spectral_distance_db(a, b, fs, f_min=20.0, f_max=None):
 
 
 def harmonic_profile_db(x, fs, orders=10):
-    """Amplitude of harmonics 1..orders relative to the fundamental, in dB."""
+    """Amplitude of harmonics 1..orders relative to the fundamental, in dB.
+
+    A harmonic at or above Nyquist is reported as absent, on the same -600 dB
+    floor harmonic_ratio_db gives, for the same reason: a Goertzel at such a
+    frequency does not read that harmonic, it reads whatever content aliases to
+    it. The vector stays `orders` long either way so callers can index it by
+    harmonic number.
+    """
     f0 = fundamental_freq(x, fs)
-    return np.array([
-        20.0 * np.log10(max(goertzel_amplitude(x, fs, h * f0) /
-                            max(goertzel_amplitude(x, fs, f0), 1e-30), 1e-30))
-        for h in range(1, orders + 1)
-    ])
+    fund = goertzel_amplitude(x, fs, f0)
+    profile = []
+    for order in range(1, orders + 1):
+        freq = _harmonic_frequencies(f0, order, fs)
+        harm = 0.0 if freq is None else goertzel_amplitude(x, fs, freq)
+        profile.append(20.0 * np.log10(max(harm / max(fund, 1e-30), 1e-30)))
+    return np.array(profile)
 
 
 def nonlinear_metrics(model, oracle_y, fs):

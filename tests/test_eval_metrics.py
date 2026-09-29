@@ -1,4 +1,5 @@
 import inspect
+import json
 import struct
 import sys
 from pathlib import Path
@@ -780,13 +781,30 @@ def test_align_signals_removes_constant_gain_error():
 
 
 def test_align_signals_preserves_real_differences():
-    """Alignment must not be able to erase a genuine spectral difference."""
+    """Alignment must not be able to erase a genuine spectral difference.
+
+    The value is pinned, not merely floored, because align_signals has exactly two
+    free parameters -- an integer lag and a constant gain -- and neither can
+    dissolve a tone that the reference does not contain:
+
+      * The 1 kHz and 3 kHz tones run a whole number of cycles over the record, so
+        they are orthogonal. The least-squares gain is
+        dot(ref + 0.2*sin3k, ref) / dot(ref, ref), and orthogonality makes the
+        sin3k term vanish, leaving g exactly 1.0 (measured: 1.0 bit-exact).
+      * The residual is therefore exactly the 0.2*sin(3kHz) term, RMS
+        0.2/sqrt(2) = 0.141421, over a reference RMS of 1/sqrt(2) = 0.707107, so
+        the NRMSE is exactly 0.2 (measured: 0.19999999999999987).
+
+    A worst-case alignment that drifted the lag by one sample would raise this, not
+    lower it. The old `> 0.01` guard therefore let an alignment erase 95% of a real
+    difference and still pass; rel=0.05 allows at most 5% erasure.
+    """
     fs = 44100
     t = np.arange(44100) / fs
     ref = np.sin(2 * np.pi * 1000 * t)
     other = ref + 0.2 * np.sin(2 * np.pi * 3000 * t)
     a, b = fe.align_signals(other, ref, fs)
-    assert fe.time_domain_nrmse(a, b) > 0.01
+    assert fe.time_domain_nrmse(a, b) == pytest.approx(0.2, rel=0.05)
 
 
 def test_spectral_distance_identical_is_zero():
@@ -813,6 +831,58 @@ def test_harmonic_profile_is_relative_to_fundamental():
     prof = fe.harmonic_profile_db(x, fs)
     assert prof[0] == pytest.approx(0.0, abs=0.5)
     assert prof[2] == pytest.approx(-20.0, abs=0.5)
+
+
+def test_harmonic_profile_floors_harmonics_above_nyquist():
+    """A harmonic past Nyquist is absent, not an aliased reading.
+
+    At fs=44100 a 6 kHz fundamental reaches Nyquist at the 4th harmonic
+    (24000 > 22050), and 6 kHz sits on an exact bin over 88200 samples, as do its
+    harmonics, so the first three read their true relative amplitudes and the rest
+    must report the -600 dB floor. Without the guard a Goertzel at 24000 Hz reads
+    whatever content aliases there -- 24000 - 44100 = -20100 Hz -- which is a
+    number about a harmonic, not about silence.
+    """
+    fs = 44100
+    t = np.arange(88200) / fs
+    x = (np.sin(2 * np.pi * 6000 * t)
+         + 0.1 * np.sin(2 * np.pi * 12000 * t)
+         + 0.5 * np.sin(2 * np.pi * 18000 * t))
+    prof = fe.harmonic_profile_db(x, fs, orders=10)
+    assert len(prof) == 10
+    assert prof[0] == pytest.approx(0.0, abs=0.01)
+    assert prof[1] == pytest.approx(-20.0, abs=0.01)
+    assert prof[2] == pytest.approx(20.0 * np.log10(0.5), abs=0.01)
+    assert np.all(prof[3:] == -600.0)
+
+
+NONLINEAR_METRIC_KEYS = {
+    "spectral_distance_db", "time_domain_nrmse", "thd_delta_db",
+    "harmonic_profile_corr", "thd_model_percent", "thd_oracle_percent",
+    "harmonic_profile_db_model", "harmonic_profile_db_oracle",
+}
+
+
+def test_nonlinear_metrics_returns_a_json_serializable_contract():
+    """nonlinear_metrics is what Task 12 consumes, so its shape is a contract.
+
+    The two profiles are lists of plain floats and the two THD readings are
+    floats, so the whole dict has to survive json.dumps -- including with
+    allow_nan=False, which is what actually rejects a NaN or an infinity rather
+    than emitting the `NaN` literal that is not valid JSON.
+    """
+    fs = 44100
+    t = np.arange(88200) / fs
+    oracle = np.sin(2 * np.pi * 1000 * t)
+    model = oracle + 0.1 * np.sin(2 * np.pi * 2000 * t)
+    metrics = fe.nonlinear_metrics(model, oracle, fs)
+
+    assert set(metrics) == NONLINEAR_METRIC_KEYS
+    assert json.loads(json.dumps(metrics, allow_nan=False)) == metrics
+    assert np.isfinite(metrics["thd_delta_db"])
+    assert -1.0 < metrics["harmonic_profile_corr"] < 1.0
+    assert len(metrics["harmonic_profile_db_model"]) == 10
+    assert len(metrics["harmonic_profile_db_oracle"]) == 10
 
 
 def test_nonlinear_score_bounded_and_orders_correctly():
