@@ -294,18 +294,37 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir,
 
 
 def spectrum_db(x, fs):
-    """Return (freqs_hz, magnitude_db) from a Hann-windowed real FFT."""
+    """Return (freqs_hz, magnitude_db) from a Hann-windowed real FFT.
+
+    Normalized so a full-scale sine at a bin centre reads 0 dB: the magnitude is
+    divided by half the window's coherent gain, sum(win)/2, which is exactly what
+    a unit sine projects onto its own bin. Left unnormalized the reading is a
+    function of the record length, a unit sine peaking at N/4, so a floor measured
+    on a long record could not be compared with one measured on a short one. Only
+    the on-bin case is exact: a tone between bins reads up to 1.4 dB low, which is
+    the Hann mainlobe's scalloping loss and not the scale. The 1e-30 floor is
+    applied after normalizing, so digital silence reads -600 dB at any length.
+    """
     x = np.asarray(x, dtype=np.float64)
     if x.size < 16:
         raise ValueError("signal too short for spectral analysis")
     win = np.hanning(x.size)
-    mag = np.abs(np.fft.rfft(x * win))
+    mag = np.abs(np.fft.rfft(x * win)) / (0.5 * float(win.sum()))
     freqs = np.fft.rfftfreq(x.size, 1.0 / fs)
     return freqs, 20.0 * np.log10(np.maximum(mag, 1e-30))
 
 
 def noise_floor_db(x, fs):
-    """Median magnitude in dB of the Hann-windowed spectrum."""
+    """Median magnitude in dB of the Hann-windowed spectrum.
+
+    The median rather than the minimum, so one occupied bin or one dip between
+    bins cannot stand in for the floor. On the spectrum_db scale this reads the
+    noise level of the record: for white noise of standard deviation sigma each
+    real bin is a complex Gaussian of mean square sigma**2*sum(win**2), so its
+    magnitude is Rayleigh and the median of the record is
+    sqrt(ln 2)*sigma*sqrt(sum(win**2))/(sum(win)/2). The record length cancels,
+    which is the point of the normalization in spectrum_db.
+    """
     _, db = spectrum_db(x, fs)
     return float(np.median(db))
 
@@ -317,12 +336,40 @@ def fundamental_freq(x, fs):
     A sub-1 kHz ceiling cannot find the tones this harness measures, which sit
     at and above 1 kHz: with the tone excluded, the largest remaining bin is the
     low-frequency skirt the Hann window leaves behind, and every harmonic is then
-    read against a fundamental the signal does not contain. DC is excluded
-    because a DC offset is not a fundamental; a silent record has no peak, and
-    reports the first bin above DC, which thd_percent then rejects as zero.
+    read against a fundamental the signal does not contain.
+
+    The peak is refined by parabolic interpolation over the three bins around the
+    maximum, so the returned frequency is the interpolated peak and not the centre
+    of the bin holding it. That is what makes the harmonic measurements mean
+    anything: bin centres are m*fs/N, and projecting a harmonic at h*f0 is then
+    h*delta bins off the true h*f0, an error the unwindowed Goertzel attenuates
+    by sinc(h*delta). Both readings are biased together but not equally, since the
+    fundamental sees sinc(delta) and the H2 sees sinc(2*delta), so an uncorrected
+    bin centre turns a true 10 % THD into anything from 0.03 % to 10 %. On the
+    dB values the fit is measured accurate to better than 0.02 bins over the whole
+    offset range, which is what keeps a true 10 % inside 0.1 and a true -20 dB H2
+    inside 0.03 dB. Interpolating in dB rather than in linear magnitude is what
+    buys that: the linear-magnitude fit is three times worse, and the dB fit is
+    also invariant to the overall scale of the spectrum, so the normalization in
+    spectrum_db cannot move the answer.
+
+    Falls back to the plain bin centre when the peak is not interpolable: at the
+    first or last bin available, or on a flat peak whose curvature is too small to
+    fit. The fit is then no better than the bin, and claiming otherwise would be
+    worse than reporting the bin. DC is excluded because a DC offset is not a
+    fundamental; a silent record has no peak, and reports the first bin above DC,
+    which thd_percent then rejects as zero.
     """
+    x = np.asarray(x, dtype=np.float64)
     freqs, db = spectrum_db(x, fs)
-    return float(freqs[1:][int(np.argmax(db[1:]))])
+    peak = int(np.argmax(db[1:])) + 1
+    delta = 0.0
+    if 2 <= peak <= db.size - 2:
+        alpha, beta, gamma = db[peak - 1], db[peak], db[peak + 1]
+        curvature = alpha - 2.0 * beta + gamma
+        if abs(curvature) > 1e-9:
+            delta = 0.5 * (alpha - gamma) / curvature
+    return float(freqs[peak] + delta * fs / x.size)
 
 
 def goertzel_amplitude(x, fs, freq):
@@ -331,9 +378,26 @@ def goertzel_amplitude(x, fs, freq):
     Projects at the exact requested frequency rather than reading the nearest FFT
     bin, so a signal that does not contain a whole number of periods does not
     leak into the reading.
+
+    Unwindowed, and the projection is exact only when `freq` is where the energy
+    actually is: an offset of delta cycles reads sinc(delta) of the amplitude, and
+    delta a whole cycle reads nothing at all. That is why the callers pass an
+    interpolated frequency rather than a bin centre.
+
+    Unwindowing also sets a floor on what can be resolved. The projection of a
+    tone a long way off responds as 1/(pi*df*T), so the fundamental leaks into
+    every harmonic's reading at about 1/(pi*f0*T). Against a -20 dB harmonic that
+    is 0.24 % at 440 Hz over 131072 samples, and 0.84 % at 202 Hz over 65536, and
+    it is the limiting error once the frequency is interpolated.
+
+    `freq` is not folded into the band. A frequency at or above Nyquist is a
+    caller error here, because a Goertzel at such a frequency does not read the
+    requested frequency, it reads whatever content happens to alias to it.
     """
     x = np.asarray(x, dtype=np.float64)
     n = x.size
+    if n == 0:
+        raise ValueError("empty signal has no amplitude at any frequency")
     k = 2.0 * np.pi * freq / fs
     coeff = 2.0 * np.cos(k)
     s1 = 0.0
@@ -347,22 +411,61 @@ def goertzel_amplitude(x, fs, freq):
     return float(2.0 * np.hypot(real, imag) / n)
 
 
+def _harmonic_frequencies(f0, order, fs):
+    """The frequency of harmonic `order` of f0, or None if it is at or above Nyquist.
+
+    A harmonic at or above fs/2 cannot be represented in the record, and
+    projecting there would read the frequency that content aliases to, so the
+    callers treat the harmonic as absent rather than measure something else.
+    """
+    freq = order * f0
+    return freq if freq < 0.5 * fs else None
+
+
 def harmonic_ratio_db(x, fs, order):
-    """Amplitude of harmonic `order` relative to the fundamental, in dB."""
+    """Amplitude of harmonic `order` relative to the fundamental, in dB.
+
+    A harmonic at or above Nyquist is reported as absent, on the same -600 dB
+    floor spectrum_db gives digital silence, because the alternative is a reading
+    of whatever aliased into the requested frequency.
+    """
     f0 = fundamental_freq(x, fs)
     fund = goertzel_amplitude(x, fs, f0)
-    harm = goertzel_amplitude(x, fs, order * f0)
+    freq = _harmonic_frequencies(f0, order, fs)
+    harm = 0.0 if freq is None else goertzel_amplitude(x, fs, freq)
     return 20.0 * np.log10(max(harm / max(fund, 1e-30), 1e-30))
 
 
 def thd_percent(x, fs, orders=10):
-    """Total harmonic distortion in percent, harmonics 2 through `orders`."""
+    """Total harmonic distortion in percent, harmonics 2 through `orders`.
+
+    The fundamental is the interpolated peak, not the bin holding it, so the
+    harmonics are projected where they actually are: every harmonic sits within
+    0.02 bins of the frequency asked for, measured over a full sweep of fractional
+    bin offsets, which is what keeps a tone placed deliberately between bins
+    inside 1 % of a true 10 % and its H2 inside 0.1 dB of -20 dB. Before the peak
+    was interpolated the same signals read anything from 0.03 % to 10 %.
+
+    What limits the reading after that is the unwindowed leakage floor in
+    goertzel_amplitude: about 0.24 % of a -20 dB harmonic at 440 Hz over 131072
+    samples, rising to 0.84 % at 202 Hz over 65536, where the fundamental is only
+    300 cycles from the H2 and leaks into its bin. A shorter record or a lower
+    fundamental has a proportionally worse floor, so the tolerances above are
+    stated for those record lengths and not for all of them.
+
+    Harmonics at or above Nyquist are skipped rather than folded back into the
+    band, so the total is over the harmonics the record can represent. A record
+    with no measurable fundamental reads 0.0.
+    """
     f0 = fundamental_freq(x, fs)
     fund = goertzel_amplitude(x, fs, f0)
     if fund <= 0.0:
         return 0.0
     power = 0.0
     for order in range(2, orders + 1):
-        amp = goertzel_amplitude(x, fs, order * f0)
+        freq = _harmonic_frequencies(f0, order, fs)
+        if freq is None:
+            continue
+        amp = goertzel_amplitude(x, fs, freq)
         power += amp * amp
     return 100.0 * np.sqrt(power) / fund

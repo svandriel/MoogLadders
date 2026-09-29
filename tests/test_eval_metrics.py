@@ -425,6 +425,132 @@ def test_noise_floor_of_silence_is_as_low_as_possible():
     assert fe.noise_floor_db(np.zeros(16384), 44100) < -300.0
 
 
+def test_noise_floor_of_silence_reads_the_amplitude_epsilon():
+    """Pinned to -600 dB because that is 20*log10(1e-30), the floor on the scale.
+
+    It is the same at any record length, which is what makes it a scale statement
+    rather than a length artifact: the epsilon is applied after spectrum_db
+    normalizes, so nothing about the window's gain is left in it.
+    """
+    for n in (16384, 88200, 131072):
+        assert fe.noise_floor_db(np.zeros(n), 44100) == pytest.approx(-600.0, abs=1e-9)
+
+
+# 1308.5 puts the tone exactly half a bin from the nearest bin centre, which is
+# where the uncorrected reading collapsed to 0.03 %: probing the H2 there put it a
+# whole cycle away from the true H2, on a null of the projection.
+_OFF_BIN_CASES = [
+    (440.0, 131072),
+    (1000.37, 88200),
+    (1308.5 * 44100 / 131072, 131072),
+]
+
+
+@pytest.mark.parametrize("f_true,n", _OFF_BIN_CASES)
+def test_thd_recovers_a_tone_placed_between_bins(f_true, n):
+    """A tone off the FFT grid must still read a true 10 % THD and a -20 dB H2.
+
+    Every other tone in this file is on the grid, because a whole number of
+    periods over the record length puts it on a bin centre, so the suite was
+    structurally unable to see this: the uncorrected code read 7.03 % here.
+    """
+    fs = 44100
+    t = np.arange(n) / fs
+    x = np.sin(2 * np.pi * f_true * t) + 0.1 * np.sin(2 * np.pi * 2 * f_true * t)
+    assert fe.thd_percent(x, fs) == pytest.approx(10.0, rel=1e-2)
+    assert fe.harmonic_ratio_db(x, fs, 2) == pytest.approx(-20.0, abs=0.1)
+
+
+@pytest.mark.parametrize("f_true,n", _OFF_BIN_CASES)
+def test_fundamental_freq_interpolates_the_peak_between_bins(f_true, n):
+    """Within 0.05 bins, which is 3x the worst case measured over a full sweep.
+
+    Half a bin, the loosest bound that could be asserted, is what the bin centre
+    already satisfies, so it would not have caught anything.
+    """
+    fs = 44100
+    t = np.arange(n) / fs
+    x = np.sin(2 * np.pi * f_true * t) + 0.1 * np.sin(2 * np.pi * 2 * f_true * t)
+    assert abs(fe.fundamental_freq(x, fs) - f_true) <= 0.05 * fs / n
+
+
+def test_spectrum_db_normalizes_a_full_scale_sine_to_zero_db():
+    """A bin-centred full-scale sine reads 0 dB at every record length.
+
+    Unnormalized it peaked at N/4, so the same tone read 22 dB higher on a
+    131072-sample record than on a 4096-sample one and no two records could be
+    compared. The three lengths span 32x, so this is the normalization itself and
+    not a coincidence at one size.
+    """
+    fs = 44100
+    for n in (4096, 16384, 131072):
+        f0 = 41 * fs / 4096  # a bin centre at all three lengths
+        t = np.arange(n) / fs
+        _freqs, db = fe.spectrum_db(np.sin(2 * np.pi * f0 * t), fs)
+        assert db.max() == pytest.approx(0.0, abs=1e-6), n
+
+
+def test_noise_floor_db_reads_the_injected_white_noise_level():
+    """A known sigma must read back within 1.5 dB, at two different lengths.
+
+    The expectation is the analytic one for the recipe: a real DFT bin of white
+    noise is complex Gaussian with mean square sigma**2*sum(win**2), so its
+    magnitude is Rayleigh and the median of the record is
+    sqrt(ln 2)*sigma*sqrt(sum(win**2))/(sum(win)/2). The length cancels, which is
+    the claim worth testing: the two lengths are 3 dB apart under the old scale
+    and 0.09 dB apart here.
+    """
+    fs, sigma = 44100, 1e-3
+    for n in (44100, 88200):
+        rng = np.random.default_rng(20260929)
+        t = np.arange(n) / fs
+        # A tone the floor must not mistake for the floor itself.
+        x = np.sin(2 * np.pi * 997 * t) + sigma * rng.standard_normal(n)
+        win = np.hanning(n)
+        expected = 20 * np.log10(
+            np.sqrt(np.log(2)) * sigma * np.sqrt((win ** 2).sum()) / (0.5 * win.sum())
+        )
+        assert fe.noise_floor_db(x, fs) == pytest.approx(expected, abs=1.5), n
+
+
+def test_thd_percent_ignores_harmonics_that_would_fold_back_into_the_band():
+    """A harmonic above Nyquist does not exist, so it is not summed.
+
+    A Goertzel at 30 kHz on a 44100 Hz record does not read 30 kHz, it reads the
+    content aliased to 14.1 kHz, and the 14.1 kHz tone here is read as though it
+    were a third harmonic: 10.0 % of real H2 reads as 14.14 % of distortion.
+    """
+    fs, n = 44100, 44100
+    t = np.arange(n) / fs
+    # 1000, 2000 and 14100 Hz are all bin centres at n=44100, so this is not a
+    # peak-interpolation case: the 14100 Hz tone is simply unrelated content.
+    x = (
+        np.sin(2 * np.pi * 10000 * t)
+        + 0.1 * np.sin(2 * np.pi * 20000 * t)
+        + 0.1 * np.sin(2 * np.pi * 14100 * t)
+    )
+    assert fe.fundamental_freq(x, fs) == pytest.approx(10000.0, rel=1e-6)
+    assert fe.thd_percent(x, fs) == pytest.approx(10.0, rel=1e-2)
+    assert fe.harmonic_ratio_db(x, fs, 2) == pytest.approx(-20.0, abs=0.01)
+
+
+def test_harmonic_ratio_db_calls_an_above_nyquist_harmonic_absent():
+    """Reported as absent, not as whatever aliased into the requested frequency."""
+    fs, n = 44100, 44100
+    t = np.arange(n) / fs
+    x = np.sin(2 * np.pi * 10000 * t) + 0.1 * np.sin(2 * np.pi * 20000 * t)
+    # Order 3 is 30 kHz and order 5 is 50 kHz, both past fs/2 = 22050 Hz.
+    assert fe.harmonic_ratio_db(x, fs, 3) == pytest.approx(-600.0, abs=1e-9)
+    assert fe.harmonic_ratio_db(x, fs, 5) == pytest.approx(-600.0, abs=1e-9)
+    assert fe.harmonic_ratio_db(x, fs, 2) == pytest.approx(-20.0, abs=0.01)
+
+
+def test_goertzel_amplitude_rejects_an_empty_signal():
+    """An empty record divides by n, so it has to be a caller error, not -nan."""
+    with pytest.raises(ValueError):
+        fe.goertzel_amplitude(np.zeros(0), 44100, 1000.0)
+
+
 def test_thd_below_16bit_floor_survives_float32_but_not_pcm16(tmp_path):
     """The exact bug that broke the old suite: a -100 dBFS tone must still show THD.
 
