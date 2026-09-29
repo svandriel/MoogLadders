@@ -30,8 +30,35 @@ Author-published errata:
 - https://dangelo.audio/assets/doc/errata_gladder1.pdf
 - https://dangelo.audio/assets/doc/errata_gladder2.pdf
 
-STATUS: not yet read. These PDFs were not machine-readable in this environment.
-A human must read both and record, one line per correction, either "applies to
-our port, fixed in <file>" or "does not apply, because <reason>". The report's
-threats-to-validity section must state the outcome plainly, including "could not
-be read". Do not leave this STATUS line in place silently.
+STATUS: read. Both PDFs are single-page and machine-readable; they were read on
+2026-09-29 by text extraction (`pypdf`). Each of the three corrections was then
+checked against the ports in `reference/`, and all three do not apply:
+
+- Part I, p.1827 (errata_gladder1.pdf, correction 1): the sentence listing the
+  controllable parameters `Ictl` and `k` and the leading-pole properties should
+  name `fc` and `Q` (for N >= 2) rather than trailing off at `fc` and the case
+  condition. Does not apply, because it is a prose correction in the published
+  text: the port implements the coefficient equations (`biquad_coeffs`, `alpha`,
+  `knorm_factor` in `reference/moog_ladder_linear.py`), which this sentence does
+  not change, and Q is not a parameter the port computes. The symbols in the
+  `Q` mention at `reference/moog_ladder_linear.py:126-127` are the quadratic of
+  an analog prototype section used in a derivation comment, not a pole Q.
+- Part I, p.1828 (errata_gladder1.pdf, correction 2): the expression
+  `fc_hat = fc/A0(k)` should read `fc_hat = fc/alpha(k)`. Does not apply,
+  because the ports already use the corrected alpha(k) form everywhere:
+  upstream `fc .*= alpha(k)` at `reference/upstream/moog_ladder_linear.m:96`,
+  and `alpha(n, k)` in `reference/moog_ladder_linear.py:40` and
+  `reference/moog_ladder_oracle.py:65`. The erroneous `A0(k)` form appears
+  nowhere in the ladder ports; the `A0`/`A02` identifiers at
+  `reference/upstream/moog_ladder_linear.m:137-141` are the bilinear-transform
+  intermediates of the response computation, and the `A0` in
+  `scripts/generate_halfband_coeffs.py` and `src/HalfBandFilter.h` is an
+  unrelated allpass filter.
+- Part II, p.1879 (errata_gladder2.pdf, correction 1): the caption of Fig. 6
+  should begin "Non-solid lines represent...". Does not apply, because it is a
+  figure-caption correction: `reference/moog_ladder_oracle.py` implements the
+  delay-free loop equations, which a caption does not change.
+
+No correction applies to a port, so no measured number in
+`docs/moog-faithfulness-report.md` moves. The report's threats-to-validity
+section states this outcome.

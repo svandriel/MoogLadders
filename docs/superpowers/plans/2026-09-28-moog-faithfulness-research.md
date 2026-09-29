@@ -105,7 +105,7 @@ validation gates mean something. It is MIT licensed, so vendoring is fine with a
 - Consumes: nothing
 - Produces: the files Tasks 3 and 5 port from. No Python symbols.
 
-- [ ] **Step 1: Verify the vendored files are present and transfer-clean**
+- [x] **Step 1: Verify the vendored files are present and transfer-clean**
 
 The files were downloaded during planning. Confirm they are intact and free of CRLF:
 
@@ -117,7 +117,7 @@ grep -l $'\r' reference/upstream/*.m || echo "no CRLF"
 
 Expected: 230, 209 and 141 lines, then `no CRLF`.
 
-- [ ] **Step 2: Write PROVENANCE.md**
+- [x] **Step 2: Write PROVENANCE.md**
 
 ```markdown
 # Upstream reference code
@@ -152,19 +152,47 @@ Author-published errata:
 - https://dangelo.audio/assets/doc/errata_gladder1.pdf
 - https://dangelo.audio/assets/doc/errata_gladder2.pdf
 
-STATUS: not yet read. These PDFs were not machine-readable in this environment.
-A human must read both and record, one line per correction, either "applies to
-our port, fixed in <file>" or "does not apply, because <reason>". The report's
-threats-to-validity section must state the outcome plainly, including "could not
-be read". Do not leave this STATUS line in place silently.
+STATUS: read. Both PDFs are single-page and machine-readable; they were read on
+2026-09-29 by text extraction (`pypdf`). All three corrections were checked
+against the ports and none applies; the per-correction record with page numbers
+is in `reference/upstream/PROVENANCE.md`.
 ```
 
-- [ ] **Step 3: Flag the errata gap in the design doc's terms**
+> **Updated by Task 16, after both PDFs were read.** The STATUS above replaces the
+> "not yet read" text this plan originally specified, which no longer describes
+> reality. The corrections, one line each:
+>
+> - Part I, p.1827: a prose sentence should name the leading-pole property `Q`
+>   alongside `fc`. **Does not apply**, because it is a correction to the
+>   published prose: the port implements coefficient equations (`biquad_coeffs`,
+>   `alpha`, `knorm_factor` in `reference/moog_ladder_linear.py`), which the
+>   sentence does not change, and Q is not a parameter the port computes.
+> - Part I, p.1828: `fc_hat = fc/A0(k)` should read `fc_hat = fc/alpha(k)`.
+>   **Does not apply**, because the ports already use alpha(k) everywhere:
+>   `reference/upstream/moog_ladder_linear.m:96` (`fc .*= alpha(k)`),
+>   `reference/moog_ladder_linear.py:40` and `reference/moog_ladder_oracle.py:65`
+>   (`alpha(n, k)`). The erroneous `A0(k)` form appears nowhere in the ladder
+>   ports; those `A0`/`A02` hits are the bilinear-transform intermediates in
+>   upstream, and an unrelated allpass filter in the halfband generator.
+> - Part II, p.1879: the caption of Fig. 6 should begin "Non-solid lines
+>   represent...". **Does not apply**, because it is a figure-caption
+>   correction, and `reference/moog_ladder_oracle.py` implements the delay-free
+>   loop equations, which a caption does not change.
+>
+> No correction applies to a port, so no measured number in the report moves.
+> Task 16 also replaced the report's erratum bullet with the "were read, none
+> applies" statement the same finding requires.
+
+- [x] **Step 3: Flag the errata gap in the design doc's terms**
 
 Because the errata are unread, add one line to the report's threats-to-validity section when
 Task 15 writes it. Do not skip the step and do not claim the errata were applied.
 
-- [ ] **Step 4: Commit**
+Done: the flag was written when Task 15 built the threats-to-validity section, phrased as
+"the D'Angelo errata were not read". Task 16 read both PDFs and rewrote the bullet to the
+"were read, none of the three corrections applies" statement the same section now carries.
+
+- [x] **Step 4: Commit**
 
 ```bash
 git add reference/upstream/
@@ -184,14 +212,14 @@ git commit -m "vendor dangelo octave references with provenance"
 - Consumes: nothing
 - Produces: pytest available in `.venv`, `reference` importable as a package
 
-- [ ] **Step 1: Install pytest into the venv**
+- [x] **Step 1: Install pytest into the venv**
 
 ```bash
 cd /home/sander/projects/github/ddiakopoulos/MoogLadders
 .venv/bin/python -m pip install pytest
 ```
 
-- [ ] **Step 2: Write a smoke test that proves the package imports**
+- [x] **Step 2: Write a smoke test that proves the package imports**
 
 `tests/test_smoke.py`:
 
@@ -203,12 +231,12 @@ def test_reference_package_imports():
     assert reference is not None
 ```
 
-- [ ] **Step 3: Run it**
+- [x] **Step 3: Run it**
 
 Run: `.venv/bin/python -m pytest tests/test_smoke.py -v`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/ reference/__init__.py
@@ -239,7 +267,7 @@ dropped deliberately, and the docstring says so.
   - `frequency_response(n, fs, fc, k, freqs) -> np.ndarray` complex response at `freqs` in Hz
   - `magnitude_db(n, fs, fc, k, freqs) -> np.ndarray` 20*log10 magnitude
 
-- [ ] **Step 1: Write the failing test for the helpers**
+- [x] **Step 1: Write the failing test for the helpers**
 
 `tests/test_linear_reference.py`:
 
@@ -284,12 +312,12 @@ def test_bw_matches_closed_form(w):
     assert mll.bw(N, w, 2.0) == pytest.approx(expected, rel=1e-12)
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_linear_reference.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'reference.moog_ladder_linear'`
 
-- [ ] **Step 3: Write the module with the helpers and the response functions**
+- [x] **Step 3: Write the module with the helpers and the response functions**
 
 `reference/moog_ladder_linear.py`:
 
@@ -389,12 +417,12 @@ def magnitude_db(n, fs, fc, k, freqs):
     return 20.0 * np.log10(np.abs(frequency_response(n, fs, fc, k, freqs)))
 ```
 
-- [ ] **Step 4: Run to verify the helper tests pass**
+- [x] **Step 4: Run to verify the helper tests pass**
 
 Run: `.venv/bin/python -m pytest tests/test_linear_reference.py -v`
 Expected: PASS, 7 tests
 
-- [ ] **Step 5: Write the tests that pin the DC gain, monotonicity, and the fc/-3dB ratio**
+- [x] **Step 5: Write the tests that pin the DC gain, monotonicity, and the fc/-3dB ratio**
 
 Append to `tests/test_linear_reference.py`:
 
@@ -431,14 +459,14 @@ def test_fc_to_minus3db_ratio_is_pinned():
     assert f3 / 1000.0 == pytest.approx(0.4348, abs=5e-4)
 ```
 
-- [ ] **Step 6: Run these three tests**
+- [x] **Step 6: Run these three tests**
 
 Run: `.venv/bin/python -m pytest tests/test_linear_reference.py -v`
 Expected: all PASS. If `test_fc_to_minus3db_ratio_is_pinned` fails, do **not** relax the expected
 value to make it green. Re-derive the coefficients by hand against the Octave source and find
 the real discrepancy.
 
-- [ ] **Step 7: Write the K=4 identity test, the load-bearing gate**
+- [x] **Step 7: Write the K=4 identity test, the load-bearing gate**
 
 Append to `tests/test_linear_reference.py`:
 
@@ -472,12 +500,12 @@ def test_peak_gain_grows_toward_k_four():
     assert peak399 > 40.0
 ```
 
-- [ ] **Step 8: Run all linear reference tests**
+- [x] **Step 8: Run all linear reference tests**
 
 Run: `.venv/bin/python -m pytest tests/test_linear_reference.py -v`
 Expected: all PASS
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add reference/moog_ladder_linear.py tests/test_linear_reference.py
@@ -505,7 +533,7 @@ four, so `H(s) = wc**4 / ((s + wc)**4 + k*wc**4)`. This comes from the circuit, 
 - Produces: `analog_response(fc, fs, k, freqs) -> np.ndarray`, complex continuous-time response
   using `wc = 2*fs*tan(pi*fc/fs)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_ported_coeffs_match_independent_analog_derivation():
@@ -526,12 +554,12 @@ def test_ported_coeffs_match_independent_analog_derivation():
         assert np.max(np.abs(ported[band] - analog[band])) < 1e-3
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_linear_reference.py::test_ported_coeffs_match_independent_analog_derivation -v`
 Expected: FAIL with `AttributeError: module has no attribute 'analog_response'`
 
-- [ ] **Step 3: Add analog_response**
+- [x] **Step 3: Add analog_response**
 
 Append to `reference/moog_ladder_linear.py`:
 
@@ -552,19 +580,19 @@ def analog_response(fc, fs, k, freqs):
     return wc**4 / ((s + wc) ** 4 + k * wc**4)
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_linear_reference.py -v`
 Expected: all PASS
 
-- [ ] **Step 5: If it fails, do not relax the threshold**
+- [x] **Step 5: If it fails, do not relax the threshold**
 
 A failure means the port is wrong. Recheck `reference/upstream/moog_ladder_linear.m` lines 125
 to 142. In particular `A0BD` and `A02` both index `A(1,:)`, which in Octave's one-based notation
 is the **first** element, that is `aw(n, 0, k)`. A port that used `a[1]` there would fail this
 test and nothing else.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add reference/moog_ladder_linear.py tests/test_linear_reference.py
@@ -590,7 +618,7 @@ test, and do not add a chunking scheme speculatively.
   - `process(x: np.ndarray, fs: float, fc: float, k: float, n: int = 4) -> np.ndarray`, float64,
     same length as `x`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/test_oracle.py`:
 
@@ -637,12 +665,12 @@ def test_larger_k_gives_larger_peak_gain():
     assert np.max(np.abs(high)) > np.max(np.abs(low))
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_oracle.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'reference.moog_ladder_oracle'`
 
-- [ ] **Step 3: Write the module**
+- [x] **Step 3: Write the module**
 
 `reference/moog_ladder_oracle.py`:
 
@@ -763,13 +791,13 @@ def process(x, fs, fc, k, n=4):
     return y
 ```
 
-- [ ] **Step 4: Run to verify the four tests pass**
+- [x] **Step 4: Run to verify the four tests pass**
 
 Run: `.venv/bin/python -m pytest tests/test_oracle.py -v`
 Expected: all PASS. If `test_dc_gain_is_one_at_zero_k` fails, the `g` scaling or `k0s` is wrong.
 Compare against `reference/upstream/moog_ladder_nonlinear.m` lines 127 to 147.
 
-- [ ] **Step 5: Write the linear-limit test, the oracle's main gate**
+- [x] **Step 5: Write the linear-limit test, the oracle's main gate**
 
 The oracle must converge to the linear reference as drive vanishes, because the tanh stages
 become linear. Append to `tests/test_oracle.py`:
@@ -797,7 +825,7 @@ def test_oracle_converges_to_linear_reference_for_tiny_signals():
     assert np.max(np.abs(got - want)) < 0.5
 ```
 
-- [ ] **Step 6: Run the linear-limit test**
+- [x] **Step 6: Run the linear-limit test**
 
 Run: `.venv/bin/python -m pytest tests/test_oracle.py::test_oracle_converges_to_linear_reference_for_tiny_signals -v`
 Expected: PASS. If it fails, the global feedback section (`rg`, `qg`, `k0g`) is the suspect: those
@@ -805,7 +833,7 @@ terms are what the delay-free method introduces and are the easiest to mistransc
 per-stage signs carefully against the Octave, where `sf(n) = r1s(i)*yi - q0s(i)*yo` and `r1s` is
 negative.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add reference/moog_ladder_oracle.py tests/test_oracle.py
@@ -831,7 +859,7 @@ THD, which is exactly where the existing suite's ranking went wrong.
 - Produces: `inline bool WriteWavFileFloat(const char* filename, int sampleRate, int numChannels,
   const std::vector<float>& samples)`, and a `--float` flag on `RunFilters` that defaults off
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/test_runfilters_float.py`:
 
@@ -945,7 +973,7 @@ def test_tone_amplitude_survives_float32_but_not_pcm16(tmp_path, extra, expected
     assert rms == pytest.approx(0.001 / np.sqrt(2.0), rel=0.05)
 ```
 
-- [ ] **Step 2: Build and run to verify the float tests fail**
+- [x] **Step 2: Build and run to verify the float tests fail**
 
 ```bash
 cd /home/sander/projects/github/ddiakopoulos/MoogLadders
@@ -957,7 +985,7 @@ cmake --build build 2>&1 | tail -5
 Expected: the `--float` tests FAIL, because `RunFilters` rejects the unknown argument and returns
 nonzero. The default PCM16 tests PASS.
 
-- [ ] **Step 3: Add WriteWavFileFloat to helpers.hpp**
+- [x] **Step 3: Add WriteWavFileFloat to helpers.hpp**
 
 Insert immediately after `WriteWavFile`. Leave that function byte-for-byte untouched.
 
@@ -999,7 +1027,7 @@ inline bool WriteWavFileFloat(const char* filename, int sampleRate, int numChann
 `ReadWavFile` at `example/helpers.hpp:201` already handles `audioFormat == 3`, so there is no
 reader change to make. Do not add one.
 
-- [ ] **Step 4: Add the flag to run-filters.cpp**
+- [x] **Step 4: Add the flag to run-filters.cpp**
 
 Near line 195, beside the other option variables:
 
@@ -1032,7 +1060,7 @@ At the write site near line 339, branch on the flag and leave the surrounding me
         if (wrote) {
 ```
 
-- [ ] **Step 5: Rebuild and run to verify all four pass**
+- [x] **Step 5: Rebuild and run to verify all four pass**
 
 ```bash
 cmake --build build 2>&1 | tail -5
@@ -1041,7 +1069,7 @@ cmake --build build 2>&1 | tail -5
 
 Expected: 4 passed
 
-- [ ] **Step 6: Verify the default path is byte-identical, as a test not a manual check**
+- [x] **Step 6: Verify the default path is byte-identical, as a test not a manual check**
 
 This is a hard constraint, so make it reproducible. Capture a reference from the pre-change
 binary by stashing the C++ edits:
@@ -1092,7 +1120,7 @@ EOF
 Expected: `byte-identical across 12 files`. If this fails, something other than the flag path
 changed. Do not proceed until it matches.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add example/helpers.hpp example/run-filters.cpp tests/test_runfilters_float.py
@@ -1123,7 +1151,7 @@ git commit -m "add opt-in float32 wav output to runfilters"
     -> Optional[np.ndarray]`, returning None when the model produced non-finite output
   - `RUNFILTERS_PATH: Path`, module global defaulted to `Path("build/RunFilters")`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/test_eval_metrics.py`:
 
@@ -1195,12 +1223,12 @@ def test_int16_wav_roundtrip(tmp_path):
     assert np.allclose(y, 0.25, atol=1e-4)
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'faithfulness_eval'`
 
-- [ ] **Step 3: Write the module header, constants, generators and WAV IO**
+- [x] **Step 3: Write the module header, constants, generators and WAV IO**
 
 `scripts/faithfulness_eval.py`, starting:
 
@@ -1400,12 +1428,12 @@ def run_model(model, signal, cutoff, resonance, oversample, runfilters, workdir)
     return y
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: PASS, 6 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/faithfulness_eval.py tests/test_eval_metrics.py
@@ -1433,7 +1461,7 @@ from the design doc.
   - `thd_percent(x, fs, orders=10) -> float`
   - `noise_floor_db(x, fs) -> float`
 
-- [ ] **Step 1: Write the failing self-validation tests**
+- [x] **Step 1: Write the failing self-validation tests**
 
 Append to `tests/test_eval_metrics.py`:
 
@@ -1502,12 +1530,12 @@ def test_thd_below_16bit_floor_survives_float32_but_not_pcm16(tmp_path):
     assert fe.thd_percent(back16, fs) < 5.0
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: FAIL with `AttributeError: module has no attribute 'thd_percent'`
 
-- [ ] **Step 3: Implement the measurement functions**
+- [x] **Step 3: Implement the measurement functions**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -1586,7 +1614,7 @@ times out, replace the inner loop with a `np.dot` against precomputed cosine and
 keeping the mathematics identical and leaving the tests unchanged so the swap is verified rather
 than assumed.
 
-- [ ] **Step 4: Run to verify the self-validation tests pass**
+- [x] **Step 4: Run to verify the self-validation tests pass**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: all PASS. Pay attention to
@@ -1612,7 +1640,7 @@ axis calibrates each control first, then compares shape at the calibrated point.
   - `best_r_for_target(responses: List[np.ndarray], resonances: List[float], reference_db) -> Tuple[float, float, int]`
   - `calibrate_resonance(model, runfilters, workdir, target_k=2.0, fc=1000.0, n=N) -> Tuple[Optional[float], Dict[str, Any]]`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_eval_metrics.py`:
 
@@ -1659,12 +1687,12 @@ def test_measured_magnitude_interpolates_onto_log_freqs():
     assert d[0] == pytest.approx(-60.0, abs=1.0)
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: FAIL with `AttributeError: module has no attribute 'reference_magnitude_db'`
 
-- [ ] **Step 3: Implement the accessors**
+- [x] **Step 3: Implement the accessors**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -1707,12 +1735,12 @@ def best_r_for_target(responses, resonances, reference_db):
     return best
 ```
 
-- [ ] **Step 4: Run to verify the accessor tests pass**
+- [x] **Step 4: Run to verify the accessor tests pass**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Implement calibrate_resonance, which drives the binary**
+- [x] **Step 5: Implement calibrate_resonance, which drives the binary**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -1746,7 +1774,7 @@ def calibrate_resonance(model, runfilters, workdir, target_k=2.0, fc=1000.0, n=3
     return best_r, {"rms_error_db": err, "n_points": len(used), "target_k": target_k}
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/faithfulness_eval.py tests/test_eval_metrics.py
@@ -1770,7 +1798,7 @@ git commit -m "add resonance calibration against the linear reference"
   - `normalize_error(value, best, worst) -> float`
   - `score_linear(metrics) -> float`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_eval_metrics.py`:
 
@@ -1831,12 +1859,12 @@ def test_linear_score_handles_nonfinite_metric():
     assert 0.0 <= fe.score_linear(metrics) <= 100.0
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: FAIL with `AttributeError: module has no attribute 'shape_metrics'`
 
-- [ ] **Step 3: Implement shape_metrics**
+- [x] **Step 3: Implement shape_metrics**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -1904,7 +1932,7 @@ def shape_metrics(measured_db, reference_db, freqs):
     }
 ```
 
-- [ ] **Step 4: Implement the weights and score_linear**
+- [x] **Step 4: Implement the weights and score_linear**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -1946,12 +1974,12 @@ def score_linear(metrics, weights=LINEAR_WEIGHTS):
     return 100.0 * total / wsum if wsum > 0.0 else 0.0
 ```
 
-- [ ] **Step 5: Run to verify the tests pass**
+- [x] **Step 5: Run to verify the tests pass**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: all PASS. The 2-pole test is what justifies `stopband_slope_error_db_per_oct`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/faithfulness_eval.py tests/test_eval_metrics.py
@@ -1976,7 +2004,7 @@ git commit -m "add shape metrics and linear scoring"
   - `nonlinear_metrics(model, oracle_y, fs) -> Dict[str, float]`
   - `NONLINEAR_WEIGHTS`, `score_nonlinear(metrics) -> float`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_eval_metrics.py`:
 
@@ -2043,12 +2071,12 @@ def test_nonlinear_score_bounded_and_orders_correctly():
     assert 0.0 <= fe.score_nonlinear(far) <= 100.0
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: FAIL with `AttributeError: module has no attribute 'align_signals'`
 
-- [ ] **Step 3: Implement alignment and distances**
+- [x] **Step 3: Implement alignment and distances**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -2124,7 +2152,7 @@ def harmonic_profile_db(x, fs, orders=10):
     ])
 ```
 
-- [ ] **Step 4: Implement nonlinear_metrics and score_nonlinear**
+- [x] **Step 4: Implement nonlinear_metrics and score_nonlinear**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -2172,12 +2200,12 @@ def score_nonlinear(metrics):
     return 100.0 * total / wsum if wsum > 0.0 else 0.0
 ```
 
-- [ ] **Step 5: Run to verify the tests pass**
+- [x] **Step 5: Run to verify the tests pass**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: all PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/faithfulness_eval.py tests/test_eval_metrics.py
@@ -2204,7 +2232,7 @@ git commit -m "add nonlinear metrics against the part two oracle"
   - `collect_selfoscillation(model, runfilters, workdir) -> Dict[str, Any]`
   - `main(argv=None) -> int`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_eval_metrics.py`:
 
@@ -2267,12 +2295,12 @@ def test_collect_linear_excludes_unstable_resonance(tmp_path, monkeypatch):
     assert "reason" in result
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_eval_metrics.py -v`
 Expected: FAIL with `AttributeError: module has no attribute 'collect_linear'`
 
-- [ ] **Step 3: Implement the collectors**
+- [x] **Step 3: Implement the collectors**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -2343,7 +2371,7 @@ def collect_linear(model, runfilters, workdir):
     return out
 ```
 
-- [ ] **Step 4: Implement collect_nonlinear and collect_selfoscillation
+- [x] **Step 4: Implement collect_nonlinear and collect_selfoscillation
 
 ```python
 def collect_nonlinear(model, runfilters, workdir, oracle, r):
@@ -2401,7 +2429,7 @@ def collect_selfoscillation(model, runfilters, workdir):
     return out
 ```
 
-- [ ] **Step 5: Implement main**
+- [x] **Step 5: Implement main**
 
 ```python
 def _timestamp():
@@ -2468,7 +2496,7 @@ def main(argv=None):
     return 0
 ```
 
-- [ ] **Step 6: Wire the CLI entry point**
+- [x] **Step 6: Wire the CLI entry point**
 
 Append to `scripts/faithfulness_eval.py`:
 
@@ -2477,7 +2505,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add scripts/faithfulness_eval.py tests/test_eval_metrics.py
@@ -2497,7 +2525,7 @@ must assert their existence.
 - New: `tests/test_report.py`
 - Output: `docs/moog-faithfulness/plots/F1_{...}.png` ... `F6_{...}.png`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_write_ranking_table_leads_with_both_axes():
@@ -2525,12 +2553,12 @@ def test_figure_caption_states_operating_point():
     assert "1000" in cap and "44100" in cap and "level" in cap
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Expected: FAIL with `ImportError` when pytest imports `scripts/faithfulness_eval` if
 it has no exports expected above. Add imports as needed.
 
-- [ ] **Step 3: Implement write_ranking_table
+- [x] **Step 3: Implement write_ranking_table
 
 ```python
 def write_ranking_table(rows):
@@ -2542,7 +2570,7 @@ def write_ranking_table(rows):
     return "\n".join(lines)
 ```
 
-- [ ] **Step 4: Implement the figure generator
+- [x] **Step 4: Implement the figure generator
 
 ```python
 def fig_caption(tag, **op):
@@ -2723,13 +2751,13 @@ def generate_figures(records, out_dir):
     return written
 ```
 
-- [ ] **Step 5: Wire figures into main
+- [x] **Step 5: Wire figures into main
 
 Add a `--write-figs PATH` option to main; after collecting, build `records =
 {name: record_dict}` (the same dicts main already writes) and call
 `generate_figures(records, PATH)`.
 
-- [ ] **Step 6: Commit
+- [x] **Step 6: Commit
 
 ```bash
 git add scripts/faithfulness_eval.py tests/test_report.py docs/moog-faithfulness/plots
@@ -2892,7 +2920,7 @@ doc by hand.
 
 ### Task 16: Final verification
 
-- [ ] **Step 1: Clean tree
+- [x] **Step 1: Clean tree
 
 ```bash
 git status --short
@@ -2901,29 +2929,51 @@ git status --short
 Expect no untracked sources except `filter_validation/` (gitignored) and any
 ignored venv.
 
-- [ ] **Step 2: Full tests
+Done: `git status --short` is empty at `23994fe`; `git status --porcelain --ignored`
+lists only `.pytest_cache/`, `.superpowers/`, `.venv/`, `build/`,
+`filter_validation/`, and the three `__pycache__/` directories.
+
+- [x] **Step 2: Full tests
 
 ```bash
 python -m pytest tests -q
 ```
 
-- [ ] **Step 3: Rebuild from scratch path
+Done: 169 passed, 6 warnings in 19.72s.
+
+- [x] **Step 3: Rebuild from scratch path
 
 If a fresh clone is available, re-run `cmake --build` and the full sweep to
 confirm the harness is reproducible end-to-end.
 
-- [ ] **Step 4: Close the plan
+Done (2026-09-29): cloned the local repo to `/tmp/opencode/moog-fresh` at
+`23994fe` and built from clean sources (`cmake -S . -B build` plus
+`cmake --build build -j`, 7.9s wall, `build/RunFilters` produced). The full
+sweep into `filter_validation/faithfulness/rebuild` took 11m57s and wrote 12
+model JSONs, every one `status == "ok"`. Compared leaf by leaf against
+`filter_validation/faithfulness/run1/metrics/*.json`: the maximum absolute
+difference over every numeric field is 0.0, and the only differing fields are
+the four provenance stamps (`args.out_dir`, `args.write_figs`, `generated_at`,
+`git_head`). Regenerating the report from the rebuild run reproduced the
+committed report byte for byte apart from its `git_head` line.
+
+- [x] **Step 4: Close the plan
 
 Remove the `STATUS: not yet read` errata note only after reading both errata PDFs;
 otherwise leave it and make the follow-up a tracked item.
+
+Done (2026-09-29): both PDFs were read by text extraction (`pypdf`). All three corrections were
+checked against the ports and none applies, so the STATUS line was replaced with the read
+record in `reference/upstream/PROVENANCE.md` and in this plan's "## Errata status" block, and
+the report's erratum bullet now says the errata were read. No measured number moved.
 
 ---
 
 ## Completion checklist (global)
 
-- [ ] All Tasks 1–16 marked done.
-- [ ] `python -m pytest tests -q` passes.
-- [ ] Report committed: `docs/moog-faithfulness-report.md`.
-- [ ] Six figures committed: `docs/moog-faithfulness/plots/`.
-- [ ] `scripts/filter_verification.py` untouched.
-- [ ] Every claim in the report is tied to a measured artifact.
+- [x] All Tasks 1–16 marked done.
+- [x] `python -m pytest tests -q` passes.
+- [x] Report committed: `docs/moog-faithfulness-report.md`.
+- [x] Six figures committed: `docs/moog-faithfulness/plots/`.
+- [x] `scripts/filter_verification.py` untouched.
+- [x] Every claim in the report is tied to a measured artifact.
