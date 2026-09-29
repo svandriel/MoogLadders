@@ -269,6 +269,45 @@ inline bool WriteWavFile(const char* filename, int sampleRate, int numChannels, 
     return file.good();
 }
 
+// Write WAV file (32-bit IEEE float). Samples are stored unclamped, so signals
+// far below 16-bit resolution stay measurable instead of quantising to silence.
+inline bool WriteWavFileFloat(const char* filename, int sampleRate, int numChannels, const std::vector<float>& samples) {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) return false;
+
+    auto write32 = [&](uint32_t v) { file.write((char*)&v, 4); };
+    auto write16 = [&](uint16_t v) { file.write((char*)&v, 2); };
+
+    uint32_t numSamples = static_cast<uint32_t>(samples.size());
+    uint16_t bitsPerSample = 32;
+    uint32_t dataSize = numSamples * (bitsPerSample / 8);
+    uint32_t fileSize = 36 + dataSize;
+
+    // RIFF header
+    file.write("RIFF", 4);
+    write32(fileSize);
+    file.write("WAVE", 4);
+
+    // fmt chunk
+    file.write("fmt ", 4);
+    write32(16); // chunk size
+    write16(3); // audio format (IEEE float)
+    write16(static_cast<uint16_t>(numChannels));
+    write32(static_cast<uint32_t>(sampleRate));
+    write32(static_cast<uint32_t>(sampleRate * numChannels * (bitsPerSample / 8))); // byte rate
+    write16(static_cast<uint16_t>(numChannels * (bitsPerSample / 8))); // block align
+    write16(bitsPerSample);
+
+    // data chunk
+    file.write("data", 4);
+    write32(dataSize);
+
+    // Samples are already in [-1.0f, 1.0f], so they go out as they are
+    file.write((const char*)samples.data(), dataSize);
+
+    return file.good();
+}
+
 class ScopedTimer
 {
     std::string message;

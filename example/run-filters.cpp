@@ -24,6 +24,9 @@ void PrintHelp(const char* programName) {
     std::cout << "  --bench                 CPU benchmark mode (no input file needed):\n";
     std::cout << "                          processes an in-memory test signal through every\n";
     std::cout << "                          filter and reports ns/sample as JSON\n";
+    std::cout << "  --float                 Write 32-bit IEEE float WAV output instead of\n";
+    std::cout << "                          16-bit PCM. Use when measuring distortion, since\n";
+    std::cout << "                          16-bit quantisation floors THD near 0.0015%.\n";
     std::cout << "  -n, --samples <n>       Benchmark signal length in samples (default: 2097152)\n";
     std::cout << "  -q, --quality <0|1|2>   Hyperion solver quality tier: 0=static, 1=relinearized\n";
     std::cout << "                          (default), 2=outer2. Ignored by other filters.\n";
@@ -193,6 +196,7 @@ int main(int argc, char* argv[]) {
     float resonance = 0.5f;
     int oversampleFactor = 0;
     bool benchMode = false;
+    bool floatOutput = false;
     int benchSamples = 1 << 21;
     hyperionQuality = -1; // -1 = leave at filter default
 
@@ -233,6 +237,9 @@ int main(int argc, char* argv[]) {
         }
         else if (arg == "--bench") {
             benchMode = true;
+        }
+        else if (arg == "--float") {
+            floatOutput = true;
         }
         else if ((arg == "-n" || arg == "--samples") && i + 1 < argc) {
             benchSamples = std::atoi(argv[++i]);
@@ -336,7 +343,10 @@ int main(int argc, char* argv[]) {
 
 
         // Write output
-        if (WriteWavFile(outputFile.c_str(), sampleRate, numChannels, samples)) {
+        bool wrote = floatOutput
+            ? WriteWavFileFloat(outputFile.c_str(), sampleRate, numChannels, samples)
+            : WriteWavFile(outputFile.c_str(), sampleRate, numChannels, samples);
+        if (wrote) {
             std::cout << "OK -> " << outputFile << "\n";
             successCount++;
         } else {
