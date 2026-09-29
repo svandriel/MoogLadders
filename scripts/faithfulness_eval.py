@@ -31,6 +31,7 @@ Output:
 
 import argparse
 import json
+import math
 import os
 import struct
 import subprocess
@@ -1100,6 +1101,19 @@ def _flagged_keys(record):
     return sorted(keys)
 
 
+def _fmt(v):
+    """A score for the ranking table, or n/a.
+
+    A model whose collector raised has None on both axes and a model that
+    diverged partway has NaN. Both are in the record file, and Task 14 prints the
+    ranking from those records, so the table has to carry a blank rather than
+    raise TypeError or print "nan" in the column a reader scans for the leader.
+    """
+    if v is None or (isinstance(v, float) and not math.isfinite(v)):
+        return "n/a"
+    return f"{v:.2f}"
+
+
 def write_ranking_table(rows):
     """Render a markdown table. Both axes must appear before the combined score.
 
@@ -1111,7 +1125,8 @@ def write_ranking_table(rows):
              "|---|---:|---:|---:|"]
     for r in rows:
         lines.append(
-            f"| {r['model']} | {r['linear']:.2f} | {r['nonlinear']:.2f} | {r['combined']:.2f} |"
+            f"| {r['model']} | {_fmt(r['linear'])} | {_fmt(r['nonlinear'])}"
+            f" | {_fmt(r['combined'])} |"
         )
     return "\n".join(lines)
 
@@ -1120,9 +1135,12 @@ def fig_caption(tag, **op):
     """Build a one-line caption that pins the operating point.
 
     Every figure here is one operating point, not a summary, so the caption
-    carries the conditions: which cutoff, which k, which sample rate, which level.
+    carries the conditions: which cutoff, which k, which sample rate, which
+    level. A figure whose data has no level passes none; naming one would be a
+    claim about a setting that was never run.
     """
-    base = f"F{tag} — {op.pop('title', tag)}"
+    # tag arrives as "F1".."F6", already carrying the F the filenames use.
+    base = f"{tag} — {op.pop('title', tag)}"
     op_text = ", ".join(f"{k}={v}" for k, v in op.items())
     return f"{base} at ({op_text})"
 
@@ -1153,6 +1171,46 @@ def _measured(rec, key):
     part = rec.get("linear") or {}
     case = (part.get("measured") or {}).get(key)
     return case if isinstance(case, dict) else {}
+
+
+def _harmonic_profile(rec, key, field):
+    """One case's harmonic profile as plottable dB re H1, or None.
+
+    harmonic_profile_db divides every harmonic by the fundamental, so a run whose
+    fundamental came back zero yields ten NaNs rather than ten floors: Stilson's
+    fc=100.0, -24 dBFS case carries exactly that under status ok. A truthy check
+    passes that list and the figure draws an empty line and a legend entry for a
+    model that produced no output at that operating point.
+    """
+    case = _case(rec, key) or {}
+    prof = case.get(field)
+    if not prof or not isinstance(prof, (list, tuple)):
+        return None
+    if any(_num(v) is None for v in prof):
+        return None
+    return list(prof)
+
+
+def _score_bars(records):
+    """(name, linear, nonlinear, combined) per rankable model, best combined first.
+
+    A model enters only with both axes measured. One axis alone would be a bar
+    scored out of 100 on an axis nobody looked at, and a flagged model has no
+    ranking entry at all however good its survivors look: the flag is what says
+    the number does not stand for the model.
+    """
+    bars = []
+    for name, rec in records.items():
+        if not _ok(rec):
+            continue
+        lin = _num((rec.get("linear") or {}).get("linear_score"))
+        nlin = _num((rec.get("nonlinear") or {}).get("nonlinear_score"))
+        if lin is None or nlin is None:
+            continue
+        bars.append((name, lin, nlin,
+                     COMBINED_WEIGHT_LINEAR * lin + (1 - COMBINED_WEIGHT_LINEAR) * nlin))
+    bars.sort(key=lambda b: b[3], reverse=True)
+    return bars
 
 
 def generate_figures(records, out_dir):
@@ -1193,7 +1251,11 @@ def generate_figures(records, out_dir):
     ax.set_xscale("log")
     ax.set_ylabel("dB")
     ax.set_xlabel("Hz")
-    ax.set_title(fig_caption("F1", fc=1000, K="various", f_s=SAMPLE_RATE, level="-"))
+    # No level: a magnitude response is measured from an impulse, so there is no
+    # input level to state. Naming one would send the reader looking for a sweep
+    # setting that was never run.
+    ax.set_title(fig_caption("F1", title="reference magnitude vs k",
+                             fc=1000, K="various", f_s=SAMPLE_RATE))
     ax.legend()
     save(fig, "F1_reference_magnitude_vs_k.png")
 
@@ -1208,7 +1270,9 @@ def generate_figures(records, out_dir):
             ax.scatter(score, err, label=name)
     ax.set_xlabel("linear score")
     ax.set_ylabel("cutoff error (cents)")
-    ax.set_title(fig_caption("F2", fc=1000, K="calibrated", f_s=SAMPLE_RATE, level=-6))
+    # Level-free for the same reason as F1: the linear set is an impulse sweep.
+    ax.set_title(fig_caption("F2", title="cutoff error vs linear score",
+                             fc=1000, K="calibrated", f_s=SAMPLE_RATE))
     legend(ax)
     save(fig, "F2_cutoff_error_vs_score.png")
 
@@ -1219,21 +1283,21 @@ def generate_figures(records, out_dir):
     for name, rec in records.items():
         if not _ok(rec):
             continue
-        c = _case(rec, "fc1000.0_lvl-6.0_os0") or {}
-        prof = c.get("harmonic_profile_db_oracle")
+        prof = _harmonic_profile(rec, "fc1000.0_lvl-6.0_os0", "harmonic_profile_db_oracle")
         if prof:
             ax.plot(range(1, len(prof) + 1), prof, color="k", linestyle="--", label="oracle")
             break
     for name, rec in records.items():
         if not _ok(rec):
             continue
-        c = _case(rec, "fc1000.0_lvl-6.0_os0") or {}
-        prof = c.get("harmonic_profile_db_model")
+        prof = _harmonic_profile(rec, "fc1000.0_lvl-6.0_os0", "harmonic_profile_db_model")
         if prof:
             ax.plot(range(1, len(prof) + 1), prof, label=name)
     ax.set_xlabel("harmonic order")
-    ax.set_ylabel("dBFS")
-    ax.set_title(fig_caption("F3", fc=1000, K=2, f_s=SAMPLE_RATE, level=-6))
+    # harmonic_profile_db reports every harmonic relative to H1, not in dBFS.
+    ax.set_ylabel("dB re H1")
+    ax.set_title(fig_caption("F3", title="harmonic spectrum vs oracle",
+                             fc=1000, K=2, f_s=SAMPLE_RATE, level=-6))
     legend(ax)
     save(fig, "F3_harmonic_spectrum.png")
 
@@ -1263,7 +1327,8 @@ def generate_figures(records, out_dir):
                 color="k", linestyle="--", label="oracle")
     ax.set_xlabel("level (dBFS)")
     ax.set_ylabel("THD (%)")
-    ax.set_title(fig_caption("F4", fc=1000, K=2, f_s=SAMPLE_RATE, level="5 levels"))
+    ax.set_title(fig_caption("F4", title="THD vs level", fc=1000, K=2,
+                             f_s=SAMPLE_RATE, level="5 levels"))
     legend(ax)
     save(fig, "F4_thd_vs_level.png")
 
@@ -1284,23 +1349,14 @@ def generate_figures(records, out_dir):
     ax.set_xscale("log")
     ax.set_xlabel("fc (Hz)")
     ax.set_ylabel("spectral distance (dB)")
-    ax.set_title(fig_caption("F5", fc="3 cutoffs", K="calibrated", f_s=SAMPLE_RATE, level=-6))
+    ax.set_title(fig_caption("F5", title="spectral distance vs cutoff",
+                             fc="3 cutoffs", K="calibrated", f_s=SAMPLE_RATE, level=-6))
     legend(ax)
     save(fig, "F5_spectral_distance_vs_fc.png")
 
     # F6: linear vs nonlinear score bars, sorted by combined.
     fig, ax = plt.subplots()
-    bars = []
-    for name, rec in records.items():
-        if not _ok(rec):
-            continue
-        lin = _num((rec.get("linear") or {}).get("linear_score"))
-        nlin = _num((rec.get("nonlinear") or {}).get("nonlinear_score"))
-        if lin is None or nlin is None:
-            continue
-        bars.append((name, lin, nlin,
-                     COMBINED_WEIGHT_LINEAR * lin + (1 - COMBINED_WEIGHT_LINEAR) * nlin))
-    bars.sort(key=lambda b: b[3], reverse=True)
+    bars = _score_bars(records)
     x = np.arange(len(bars))
     if bars:
         ax.bar(x - 0.2, [b[1] for b in bars], 0.4, label="linear")
@@ -1310,7 +1366,8 @@ def generate_figures(records, out_dir):
         ax.set_ylim(0, 100)
         ax.legend()
     ax.set_ylabel("score (0-100)")
-    ax.set_title(fig_caption("F6", fc="all", K="calibrated/2", f_s=SAMPLE_RATE, level="mixed"))
+    ax.set_title(fig_caption("F6", title="linear and nonlinear scores", fc="all",
+                             K="calibrated/2", f_s=SAMPLE_RATE, level="mixed"))
     save(fig, "F6_score_bars.png")
 
     assert len(written) == 6, f"expected 6 figures, got {len(written)}"
@@ -1396,9 +1453,9 @@ def main(argv=None):
         records[name] = record
 
     # The figures are a rendering of these records, not a second measurement, so
-    # they come from the same dicts the JSON was written from. Unknown names
-    # contribute an error record already and are skipped by the figures' own
-    # status gate.
+    # they come from the same dicts the JSON was written from. Only the names that
+    # swept are in here: a name that is not a model never reaches the loop above,
+    # so it contributes no record and nothing to draw.
     if args.write_figs:
         generate_figures(records, args.write_figs)
 

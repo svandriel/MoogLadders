@@ -32,15 +32,16 @@ def test_figure_caption_states_operating_point():
     assert "1000" in cap and "44100" in cap and "level" in cap
 
 
-def _record(status="ok", linear=None, nonlinear=None):
-    return {
+def _record(status="ok", **overrides):
+    """One model's record. Pass linear=None / nonlinear=None for a real None section."""
+    rec = {
         "model": "X", "status": status, "flagged": [],
-        "linear": linear or {
+        "linear": {
             "requested": {"resonance": 0.4},
             "measured": {"fc1000.0_os0": {"cutoff_3db_error_cents": -25.0}},
             "linear_score": 72.5,
         },
-        "nonlinear": nonlinear or {
+        "nonlinear": {
             "cases": {
                 "fc1000.0_lvl-6.0_os0": {
                     "spectral_distance_db": 3.4,
@@ -54,6 +55,157 @@ def _record(status="ok", linear=None, nonlinear=None):
         },
         "selfosc": {"0.9": {"ringing": False, "tail_rms_db": -80.0}},
     }
+    rec.update(overrides)
+    return rec
+
+
+def _captured_axes(monkeypatch, tmp_path, recs):
+    """What each figure's axes say, captured instead of written to disk.
+
+    Axis text is the part of a figure a reader takes as a claim, and it is the one
+    part a test can read. savefig is stubbed out: this asks what would have been
+    drawn, not what would have landed on the filesystem.
+    """
+    import matplotlib.figure
+    import matplotlib.pyplot as plt
+
+    seen = {}
+
+    def fake_savefig(self, fname, **kwargs):
+        ax = self.axes[0]
+        seen[Path(fname).name] = {
+            "xlabel": ax.get_xlabel(),
+            "ylabel": ax.get_ylabel(),
+            "title": ax.get_title(),
+            "labels": [line.get_label() for line in ax.get_lines()],
+        }
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "savefig", fake_savefig)
+    try:
+        fe.generate_figures(recs, tmp_path)
+    finally:
+        plt.close("all")
+    assert len(seen) == 6, sorted(seen)
+    return seen
+
+
+def test_f3_axis_is_relative_to_the_fundamental(monkeypatch, tmp_path):
+    """harmonic_profile_db is dB re H1, not dBFS.
+
+    Every case in every record has profile[0] == 0.0, which is what a reference
+    of 0 dB means: the first entry is the fundamental itself, so the axis is
+    relative to it. A dBFS axis would put H1 at some unstated level and read as
+    a claim about absolute output.
+    """
+    seen = _captured_axes(monkeypatch, tmp_path, {"A": _record()})
+    assert seen["F3_harmonic_spectrum.png"]["ylabel"] == "dB re H1"
+
+
+def test_titles_name_the_figure_instead_of_repeating_the_tag(monkeypatch, tmp_path):
+    """The tag goes in once, followed by what the figure shows.
+
+    fig_caption is handed the tag the filename uses ("F1"), so the caption must
+    not prepend another F: "FF1 — F1 at (...)" is what a caller that only reads
+    the axis text sees.
+    """
+    seen = _captured_axes(monkeypatch, tmp_path, {})
+    for name, info in seen.items():
+        tag = name.split("_")[0]
+        assert info["title"].startswith(f"{tag} — "), info["title"]
+        assert info["title"] != f"{tag} — {tag} at", info["title"]
+
+
+def test_captions_state_only_the_operating_points_the_data_has(monkeypatch, tmp_path):
+    """F1 and F2 have no input level; claiming one is a fabricated condition.
+
+    F1 is a magnitude response and F2 a cutoff error against a score, both taken
+    from a sweep whose amplitude is not part of the measurement. A caption that
+    names a level reads as "this was measured at -6 dBFS" and sends the reader
+    looking for a sweep setting that does not exist.
+    """
+    calls = {}
+    real = fe.fig_caption
+
+    def spy(tag, **op):
+        calls[tag] = dict(op)
+        return real(tag, **op)
+
+    monkeypatch.setattr(fe, "fig_caption", spy)
+    fe.generate_figures({"A": _record()}, tmp_path)
+    assert set(calls) == {"F1", "F2", "F3", "F4", "F5", "F6"}
+    for tag in ("F1", "F2"):
+        assert "level" not in calls[tag], calls[tag]
+    for tag in ("F3", "F4", "F5", "F6"):
+        assert calls[tag].get("level") is not None, calls[tag]
+    for tag, op in calls.items():
+        assert op.get("f_s") == fe.SAMPLE_RATE, op
+
+
+def test_harmonic_profile_drops_nan_profiles():
+    """A profile of NaNs is not a spectrum; it is a run that produced no output.
+
+    Stilson at fc=100.0, -24 dBFS carries exactly that: status ok, unflagged, and
+    a ten-entry model profile that is all NaN. Plotting it would draw an empty
+    line and, worse, put it in the legend as a model that was measured.
+    """
+    key = "fc1000.0_lvl-6.0_os0"
+    field = "harmonic_profile_db_model"
+    assert fe._harmonic_profile(_record(), key, field) == [-20.0] * 10
+
+    nan_rec = _record()
+    nan_rec["nonlinear"]["cases"][key][field] = [float("nan")] * 10
+    assert fe._harmonic_profile(nan_rec, key, field) is None
+
+    one_bad = _record()
+    one_bad["nonlinear"]["cases"][key][field] = [-20.0] * 9 + [None]
+    assert fe._harmonic_profile(one_bad, key, field) is None
+
+    assert fe._harmonic_profile(_record(), key, "missing_field") is None
+    assert fe._harmonic_profile(_record(), "fc9.0_lvl-6.0_os0", field) is None
+    assert fe._harmonic_profile(_record(nonlinear=None), key, field) is None
+    errored = _record()
+    errored["nonlinear"]["cases"] = {key: {"error": "no finite output"}}
+    assert fe._harmonic_profile(errored, key, field) is None
+    empty = _record()
+    empty["nonlinear"]["cases"][key][field] = []
+    assert fe._harmonic_profile(empty, key, field) is None
+
+
+def test_a_nan_profile_draws_no_line_and_no_legend_entry(monkeypatch, tmp_path):
+    nan_rec = _record()
+    nan_rec["nonlinear"]["cases"]["fc1000.0_lvl-6.0_os0"]["harmonic_profile_db_model"] = (
+        [float("nan")] * 10
+    )
+    seen = _captured_axes(monkeypatch, tmp_path, {"A": _record(), "Nan": nan_rec})
+    f3 = seen["F3_harmonic_spectrum.png"]
+    assert f3["labels"] == ["oracle", "A"]
+
+
+def _scored(name, lin, nlin):
+    return {name: _record(linear={"linear_score": lin}, nonlinear={"nonlinear_score": nlin})}
+
+
+def test_score_bars_sort_by_weighted_combined():
+    recs = {}
+    recs.update(_scored("A", 72.5, 48.0))  # 60.25
+    recs.update(_scored("B", 10.0, 90.0))  # 50.00
+    recs.update(_scored("C", 40.0, 40.0))  # 40.00
+    bars = fe._score_bars(recs)
+    assert [b[0] for b in bars] == ["A", "B", "C"]
+    assert [b[3] for b in bars] == [60.25, 50.0, 40.0]
+    assert bars[0][1] == 72.5 and bars[0][2] == 48.0
+
+    # One axis measured is not a ranking entry: a bar height from a single axis
+    # would be scored against 100 on an axis that was never looked at.
+    recs["D"] = _scored("D", 99.0, 0.0)["D"]
+    recs["D"]["nonlinear"] = None
+    assert "D" not in [b[0] for b in fe._score_bars(recs)]
+
+    # A flagged model has no ranking entry either, however good it looks.
+    recs["E"] = _record(status="flagged",
+                        linear={"linear_score": 100.0},
+                        nonlinear={"nonlinear_score": 100.0})
+    assert "E" not in [b[0] for b in fe._score_bars(recs)]
 
 
 def test_generate_figures_skips_flagged_and_error_models(tmp_path):
@@ -67,13 +219,15 @@ def test_generate_figures_skips_flagged_and_error_models(tmp_path):
     # exercised through the F6 PNG being produced from A only:
     # (assert no exception and 6 files regardless)
     assert len(written) == 6
+    # C is ok but measured nothing, so it is not a bar next to A.
+    assert [b[0] for b in fe._score_bars(recs)] == ["A"]
 
 
 def test_score_bars_use_weighted_combined(tmp_path):
     recs = {"A": _record()}
     fe.generate_figures(recs, tmp_path)
-    # Just assert generation succeeds with one ok model; the weighted sort is
-    # checked by reading pixels is overkill here - pin the computation instead:
+    # Belt to test_score_bars_sort_by_weighted_combined, which exercises the
+    # sort generate_figures actually draws from: pin the weight arithmetic.
     rec = _record()
     lin = rec["linear"]["linear_score"]
     nlin = rec["nonlinear"]["nonlinear_score"]
@@ -115,6 +269,26 @@ def test_ranking_table_numbers_are_pinned():
     assert lines[2] == "| A | 72.50 | 48.00 | 60.25 |"
     assert lines[2].index("72.50") < lines[2].index("60.25")
     assert np.isfinite(60.25)
+
+
+def test_ranking_table_renders_unmeasured_scores_as_na():
+    """A flagged model has to reach the table, so the table has to hold a blank.
+
+    main puts every model in the record file, flagged or not, and Task 14 prints
+    the ranking from those records. "{:.2f}".format(None) raises TypeError and
+    NaN prints as "nan", so a run with one diverged model would take the report
+    down at the last step instead of naming the model.
+    """
+    rows = [
+        {"model": "A", "linear": 72.5, "nonlinear": 48.0, "combined": 60.25},
+        {"model": "B", "linear": None, "nonlinear": None, "combined": None},
+        {"model": "C", "linear": float("nan"), "nonlinear": 10.0, "combined": float("nan")},
+    ]
+    lines = fe.write_ranking_table(rows).splitlines()
+    assert lines[2] == "| A | 72.50 | 48.00 | 60.25 |"
+    assert lines[3] == "| B | n/a | n/a | n/a |"
+    assert lines[4] == "| C | n/a | 10.00 | n/a |"
+    assert "nan" not in lines[4]
 
 
 def test_main_writes_the_figures_when_asked_and_none_otherwise(tmp_path, monkeypatch):
