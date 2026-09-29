@@ -430,10 +430,15 @@ def _verdict(records, bars, total):
         ]
     else:
         excluded = total - len(bars)
+        if excluded == 1:
+            clause = ("the model that was flagged is not scored, and section "
+                      "4.4 names it and says why")
+        else:
+            clause = ("the models that were flagged are not scored, and "
+                      "section 4.4 names them and says why")
         lines += [
             f"{len(bars)} of the {total} models in this repository are in the "
-            f"table; the {excluded} that were flagged are not scored, and "
-            "section 4.4 names them and says why.",
+            f"table; " + clause + ".",
         ]
     lines += [
         "",

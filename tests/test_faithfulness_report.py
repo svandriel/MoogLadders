@@ -20,6 +20,13 @@ RUN_ENVELOPE = {
     "software": {"python": "3.14.7", "numpy": "2.5.3", "scipy": "1.18.1"},
 }
 
+RUN1_DIR = REPO / "filter_validation" / "faithfulness" / "run1" / "metrics"
+LEGACY_STEP = REPO / "filter_validation" / "2026-09-28_201435" / "metrics" / "step.json"
+needs_legacy_records = pytest.mark.skipif(
+    not (RUN1_DIR.exists() and LEGACY_STEP.exists()),
+    reason="the run and legacy suites are gitignored; not present in a fresh clone",
+)
+
 PLOT_NAMES = [
     "F1_reference_magnitude_vs_k.png",
     "F2_cutoff_error_vs_score.png",
@@ -510,6 +517,7 @@ def test_appendix_states_what_was_not_measured(tmp_path):
         assert needle in appendix.lower(), needle
 
 
+@needs_legacy_records
 def test_legacy_artifacts_match_the_legacy_records(tmp_path):
     """The legacy-carried artifact sentences rest on numbers the records contain.
 
@@ -519,6 +527,10 @@ def test_legacy_artifacts_match_the_legacy_records(tmp_path):
     0.0000" and "settled … in 27 ms", and both have to be true of the step
     records the sentence says they come from, or the claim is legible and
     wrong.
+
+    Skipped in a fresh clone because both suites are gitignored; runs wherever
+    the sweep has been executed, which is where the drift it guards would
+    first be noticed (a regenerated report next to its records).
     """
     records = fr.load_records(
         REPO / "filter_validation" / "faithfulness" / "run1")
